@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LaiLab Nano V1 — Model Preparation</title>
+    <meta name="description" content="Convert and deploy YOLO models to LicheeRV Nano with automated pipeline.">
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="/static/landing.css">
+    <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+    <!-- ============================================================ -->
+    <!-- APP LAYOUT -->
+    <!-- ============================================================ -->
+    <div class="app-layout">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <a href="/" class="nav-logo">
+                    <div class="logo-icon">
+                        <svg viewBox="0 0 40 40" fill="none">
+                            <rect x="2" y="2" width="36" height="36" rx="8" stroke="url(#logoGradApp)" stroke-width="2.5"/>
+                            <path d="M12 20L18 14L26 22L20 28Z" fill="url(#logoGradApp)"/>
+                            <circle cx="26" cy="14" r="4" fill="url(#logoGradApp)" opacity="0.7"/>
+                            <defs>
+                                <linearGradient id="logoGradApp" x1="0" y1="0" x2="40" y2="40">
+                                    <stop stop-color="#6366f1"/>
+                                    <stop offset="1" stop-color="#a855f7"/>
+                                </linearGradient>
+                            </defs>
+                        </svg>
+                    </div>
+                    <span class="logo-text">LaiLab <span class="logo-accent">Nano</span></span>
+                </a>
+                <span class="version-badge">V1</span>
+            </div>
+
+            <nav class="sidebar-nav">
+                <a href="#" class="sidebar-link" data-page="dashboard">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                    <span data-i18n="app_nav_dashboard">Dashboard</span>
+                </a>
+                <a href="#" class="sidebar-link active" data-page="model-prep">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                    <span data-i18n="app_nav_model_prep">Model Preparation</span>
+                </a>
+                <a href="#" class="sidebar-link" data-page="deploy">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                    <span data-i18n="app_nav_deploy">Deployment</span>
+                </a>
+                <a href="#" class="sidebar-link" data-page="config">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    <span data-i18n="app_nav_config">Configuration</span>
+                </a>
+                <a href="#" class="sidebar-link" data-page="monitor">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                    <span data-i18n="app_nav_monitor">Monitoring</span>
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <button class="btn-icon" id="appThemeToggle" aria-label="Toggle theme">
+                    <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="5"/>
+                        <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                    </svg>
+                    <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                    </svg>
+                </button>
+                <button class="btn-icon btn-lang" id="langToggle" aria-label="Toggle language">
+                    <span id="langLabel">EN</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="app-main">
+            <!-- Top Bar -->
+            <header class="app-topbar">
+                <button class="btn-icon sidebar-toggle" id="sidebarToggle">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+                </button>
+                <div class="topbar-title">
+                    <h1 data-i18n="app_title">Model Preparation</h1>
+                    <p data-i18n="app_subtitle">Convert YOLO models for LicheeRV Nano deployment</p>
+                </div>
+                <div class="topbar-actions">
+                    <div class="connection-status" id="dockerStatus">
+                        <span class="status-dot offline"></span>
+                        <span class="status-text">Docker: Checking...</span>
+                    </div>
+                    <div class="connection-status" id="connectionStatus">
+                        <span class="status-dot offline"></span>
+                        <span class="status-text">Disconnected</span>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Content Area -->
+            <div class="app-content">
+                <div class="content-grid">
+                    <!-- Left Panel: Job Configuration -->
+                    <div class="panel config-panel">
+                        <div class="panel-header">
+                            <h2 data-i18n="form_title">New Conversion Job</h2>
+                        </div>
+                        <div class="panel-body">
+                            <form id="jobForm" class="job-form">
+                                <!-- Model Source -->
+                                <div class="form-group">
+                                    <label data-i18n="form_model_source">Model Source</label>
+                                    <div class="toggle-group">
+                                        <button type="button" class="toggle-btn active" data-source="preset" id="btnPreset">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
+                                            <span data-i18n="form_preset">Use Preset</span>
+                                        </button>
+                                        <button type="button" class="toggle-btn" data-source="custom" id="btnCustom">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                            <span data-i18n="form_custom">Custom Upload</span>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- Preset Selector -->
+                                <div class="form-group" id="presetGroup">
+                                    <label for="presetSelect" data-i18n="form_select_preset">Select a preset model...</label>
+                                    <select id="presetSelect" class="form-select">
+                                        <option value="">-- Select --</option>
+                                    </select>
+                                </div>
+
+                                <!-- Custom Upload (hidden by default) -->
+                                <div class="form-group hidden" id="customGroup">
+                                    <label>Custom .pt Model</label>
+                                    <div class="file-drop" id="fileDrop">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="40" height="40"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                        <p>Drag & drop .pt file or <strong>browse</strong></p>
+                                        <input type="file" id="fileInput" accept=".pt" hidden>
+                                    </div>
+                                    <div class="file-info hidden" id="fileInfo">
+                                        <span id="fileName"></span>
+                                        <button type="button" class="btn-icon-sm" id="fileRemove">✕</button>
+                                    </div>
+                                </div>
+
+                                <div class="form-divider"></div>
+
+                                <!-- Basic Settings -->
+                                <div class="form-group">
+                                    <label for="modelName" data-i18n="form_model_name">Model Name</label>
+                                    <input type="text" id="modelName" class="form-input" value="yolov8n" placeholder="e.g. yolov8n">
+                                </div>
+                                <div class="form-group">
+                                    <label for="processor" data-i18n="form_processor">Target Processor</label>
+                                    <select id="processor" class="form-select">
+                                        <option value="cv181x">CV181x (LicheeRV Nano)</option>
+                                        <option value="cv180x">CV180x</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="inputWidth" data-i18n="form_input_width">Input Width</label>
+                                        <input type="number" id="inputWidth" class="form-input" value="640" min="32" max="1280" step="32">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="inputHeight" data-i18n="form_input_height">Input Height</label>
+                                        <input type="number" id="inputHeight" class="form-input" value="640" min="32" max="1280" step="32">
+                                    </div>
+                                </div>
+
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="quantize" data-i18n="form_quantize">Quantization</label>
+                                        <select id="quantize" class="form-select">
+                                            <option value="int8">INT8</option>
+                                            <option value="bf16">BF16</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="calibrationCount" data-i18n="form_calibration_count">Calibration Images</label>
+                                        <input type="number" id="calibrationCount" class="form-input" value="100" min="10" max="1000" step="10">
+                                    </div>
+                                </div>
+
+                                <!-- Advanced Settings (Collapsible) -->
+                                <button type="button" class="advanced-toggle" id="advancedToggle">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="6 9 12 15 18 9"/></svg>
+                                    <span data-i18n="form_advanced">Advanced Settings</span>
+                                </button>
+
+                                <div class="advanced-settings hidden" id="advancedSettings">
+                                    <div class="form-group">
+                                        <label for="dockerContainer" data-i18n="form_docker_container">Docker Container</label>
+                                        <select id="dockerContainer" class="form-select">
+                                            <option value="TPU-LAILAB-NANO-CONTAINER">TPU-LAILAB-NANO-CONTAINER (auto-create)</option>
+                                        </select>
+                                        <small class="form-hint" data-i18n="form_docker_hint">Container will be auto-created if not found. Image: sophgo/tpuc_dev.</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="tolerance" data-i18n="form_tolerance">Tolerance</label>
+                                        <input type="text" id="tolerance" class="form-input" value="0.85,0.45" placeholder="0.85,0.45">
+                                    </div>
+                                </div>
+
+                                <button type="submit" class="btn-primary btn-submit" id="startBtn">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                    <span data-i18n="form_start">Start Conversion</span>
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <!-- Right Panel: Pipeline Status & Logs -->
+                    <div class="panel pipeline-panel">
+                        <div class="panel-header">
+                            <h2 data-i18n="pipeline_title">Conversion Pipeline</h2>
+                            <div class="panel-actions" id="pipelineActions" style="display:none;">
+                                <button class="btn-icon-sm btn-cancel" id="cancelBtn" title="Cancel">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="panel-body">
+                            <!-- Pipeline Steps -->
+                            <div class="pipeline-steps" id="pipelineSteps">
+                                <div class="pipeline-empty" id="pipelineEmpty">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" width="64" height="64" opacity="0.3">
+                                        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                                        <path d="M2 17l10 5 10-5"/>
+                                        <path d="M2 12l10 5 10-5"/>
+                                    </svg>
+                                    <p data-i18n="pipeline_empty">No active conversion jobs. Create a new job to get started.</p>
+                                </div>
+                            </div>
+
+                            <!-- Log Console -->
+                            <div class="log-section">
+                                <div class="log-header">
+                                    <h3 data-i18n="pipeline_log_title">Pipeline Logs</h3>
+                                    <button class="btn-icon-sm" id="clearLogs" title="Clear logs">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                    </button>
+                                </div>
+                                <div class="log-console" id="logConsole">
+                                    <div class="log-empty" data-i18n="pipeline_log_empty">Waiting for pipeline to start...</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Socket.IO -->
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <script src="/static/i18n.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>
