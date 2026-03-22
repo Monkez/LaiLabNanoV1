@@ -14,7 +14,7 @@ import uuid
 import shlex
 import signal
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, send_from_directory, send_file
+from flask import Flask, render_template, request, jsonify, send_from_directory, send_file, Response
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from werkzeug.utils import secure_filename
@@ -400,6 +400,17 @@ def run_conversion_pipeline(job):
     try:
         job.status = 'running'
         emit_job_update(job)
+
+        # Clean up old models from outputs folder
+        if os.path.exists(OUTPUT_FOLDER):
+            for old_file in os.listdir(OUTPUT_FOLDER):
+                if old_file.endswith('.cvimodel'):
+                    old_path = os.path.join(OUTPUT_FOLDER, old_file)
+                    try:
+                        os.remove(old_path)
+                        emit_log(job, f'Removed old model: {old_file}')
+                    except Exception as e:
+                        emit_log(job, f'Warning: could not remove {old_file}: {e}', 'warning')
 
         config = job.config
         model_name = config.get('model_name', 'yolov8n')
@@ -934,11 +945,67 @@ def download_model(job_id):
     if not job.output_model or not os.path.exists(job.output_model):
         return jsonify({'error': 'Output model not available'}), 404
 
-    return send_file(
-        job.output_model,
-        as_attachment=True,
-        download_name=os.path.basename(job.output_model)
-    )
+    # Strip job_id prefix from filename for cleaner download name
+    raw_name = os.path.basename(job.output_model)
+    if raw_name.startswith(job_id + '_'):
+        clean_name = raw_name[len(job_id) + 1:]
+    else:
+        clean_name = raw_name
+
+    with open(job.output_model, 'rb') as f:
+        data = f.read()
+    response = Response(data, mimetype='application/octet-stream')
+    response.headers['Content-Disposition'] = f'attachment; filename="{clean_name}"'
+    response.headers['Content-Length'] = len(data)
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return response
+
+
+# ---- Direct file download (works after server restart) ----
+@app.route('/api/models/<filename>/download', methods=['GET'])
+def download_model_file(filename):
+    """Download a .cvimodel file directly from the outputs folder."""
+    # Security: prevent path traversal
+    safe_name = os.path.basename(filename)
+    fpath = os.path.join(OUTPUT_FOLDER, safe_name)
+    if not os.path.exists(fpath):
+        return jsonify({'error': 'File not found'}), 404
+
+    # Strip job_id prefix for clean download name
+    parts = safe_name.split('_', 1)
+    clean_name = parts[1] if len(parts) > 1 else safe_name
+
+    with open(fpath, 'rb') as f:
+        data = f.read()
+    response = Response(data, mimetype='application/octet-stream')
+    response.headers['Content-Disposition'] = f'attachment; filename="{clean_name}"'
+    response.headers['Content-Length'] = len(data)
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return response
+
+
+# ---- Available Models ----
+@app.route('/api/models', methods=['GET'])
+def list_models():
+    """List available .cvimodel files from outputs folder."""
+    models = []
+    if os.path.exists(OUTPUT_FOLDER):
+        for f in os.listdir(OUTPUT_FOLDER):
+            if f.endswith('.cvimodel'):
+                fpath = os.path.join(OUTPUT_FOLDER, f)
+                # Strip job_id prefix for display name
+                parts = f.split('_', 1)
+                display_name = parts[1] if len(parts) > 1 else f
+                models.append({
+                    'filename': f,
+                    'display_name': display_name,
+                    'path': fpath,
+                    'size': os.path.getsize(fpath),
+                    'modified': os.path.getmtime(fpath),
+                })
+    # Sort by modification time, newest first
+    models.sort(key=lambda x: x['modified'], reverse=True)
+    return jsonify({'models': models})
 
 
 # ---- Presets ----

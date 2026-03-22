@@ -101,14 +101,14 @@ document.addEventListener('DOMContentLoaded', () => {
                             // No containers — use default container name
                             const fallback = document.createElement('option');
                             fallback.value = 'TPU-LAILAB-NANO-CONTAINER';
-                            fallback.textContent = 'TPU-LAILAB-NANO-CONTAINER (auto-create)';
+                            fallback.textContent = 'TPU-LAILAB-NANO (auto)';
                             fallback.selected = true;
                             containerSelect.appendChild(fallback);
                         } else {
                             data.containers.forEach(c => {
                                 const opt = document.createElement('option');
                                 opt.value = c.name;
-                                opt.textContent = `${c.name} (${c.running ? '🟢 running' : '🔴 stopped'}) — ${c.image}`;
+                                opt.textContent = `${c.running ? '🟢' : '🔴'} ${c.name}`;
                                 containerSelect.appendChild(opt);
                             });
                         }
@@ -177,27 +177,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // ---- Model Source Toggle ----
-    const btnPreset = document.getElementById('btnPreset');
-    const btnCustom = document.getElementById('btnCustom');
-    const presetGroup = document.getElementById('presetGroup');
-    const customGroup = document.getElementById('customGroup');
-
-    if (btnPreset && btnCustom) {
-        btnPreset.addEventListener('click', () => {
-            btnPreset.classList.add('active');
-            btnCustom.classList.remove('active');
-            presetGroup.classList.remove('hidden');
-            customGroup.classList.add('hidden');
-        });
-
-        btnCustom.addEventListener('click', () => {
-            btnCustom.classList.add('active');
-            btnPreset.classList.remove('active');
-            customGroup.classList.remove('hidden');
-            presetGroup.classList.add('hidden');
-        });
-    }
 
     // ---- File Upload (real upload to server) ----
     const fileDrop = document.getElementById('fileDrop');
@@ -304,12 +283,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     ? '⚠ Vui lòng chọn Docker container trong Advanced Settings trước khi bắt đầu.'
                     : '⚠ Please select a Docker container in Advanced Settings before starting.';
                 appendLog({ time: Date.now() / 1000, message: msg, level: 'error' });
-
-                // Open advanced settings so user can see the container dropdown
-                if (advancedSettings && advancedSettings.classList.contains('hidden')) {
-                    advancedToggle.classList.add('open');
-                    advancedSettings.classList.remove('hidden');
-                }
                 return;
             }
 
@@ -327,6 +300,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
             startBtn.disabled = true;
             clearLogs();
+
+            // Hide download banner from previous job
+            const banner = document.getElementById('downloadBanner');
+            if (banner) banner.classList.add('hidden');
 
             try {
                 const res = await fetch('/api/jobs', {
@@ -392,15 +369,35 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const lang = localStorage.getItem('lailab_lang') || 'en';
 
-        // Download button HTML
+        // Download button HTML + show top banner
         let downloadHtml = '';
         if (job.status === 'completed' && job.output_model) {
-            const dlLabel = lang === 'vi' ? '📥 Tải xuống Model' : '📥 Download Model';
+            const rawFileName = job.output_model.replace(/\\/g, '/').split('/').pop() || 'model.cvimodel';
+            const dlUrl = `/api/models/${encodeURIComponent(rawFileName)}/download`;
+            // Strip job_id prefix for display
+            const parts = rawFileName.split('_');
+            const displayName = parts.length > 1 ? parts.slice(1).join('_') : rawFileName;
+            const dlLabel = lang === 'vi' ? '📥 Tải xuống' : '📥 Download';
             downloadHtml = `
-                <a href="/api/jobs/${job.job_id}/download" class="btn-download" download>
+                <a href="${dlUrl}" class="btn-download" download="${displayName}">
                     ${dlLabel}
                 </a>
             `;
+
+            // Show prominent download banner at top
+            const banner = document.getElementById('downloadBanner');
+            const bannerBtn = document.getElementById('downloadBannerBtn');
+            const bannerName = document.getElementById('downloadModelName');
+            if (banner && bannerBtn) {
+                bannerName.textContent = displayName;
+                bannerBtn.href = dlUrl;
+                bannerBtn.setAttribute('download', displayName);
+                bannerBtn.onclick = null;
+                banner.classList.remove('hidden');
+            }
+
+            // Also refresh deploy models list
+            if (typeof window.refreshDeployModels === 'function') window.refreshDeployModels();
         }
 
         wrapper.innerHTML = `
@@ -530,22 +527,175 @@ document.addEventListener('DOMContentLoaded', () => {
         return div.innerHTML;
     }
 
-    // ---- Sidebar navigation (placeholder pages) ----
+    // ---- Page Navigation ----
+    const pageTitles = {
+        'dashboard': { en: 'Dashboard', vi: 'Bảng điều khiển' },
+        'model-prep': { en: 'Model Preparation', vi: 'Chuẩn bị Model' },
+        'deploy': { en: 'Deployment', vi: 'Triển khai' },
+        'inference': { en: 'Test Inference', vi: 'Kiểm thử Inference' },
+    };
+    const pageSubtitles = {
+        'dashboard': { en: 'Overview of your workspace', vi: 'Tổng quan không gian làm việc' },
+        'model-prep': { en: 'Convert YOLO models for LicheeRV Nano deployment', vi: 'Chuyển đổi model YOLO cho LicheeRV Nano' },
+        'deploy': { en: 'Deploy models to LicheeRV Nano device', vi: 'Triển khai model lên thiết bị LicheeRV Nano' },
+        'inference': { en: 'Run inference tests on deployed models', vi: 'Chạy kiểm thử inference trên model đã triển khai' },
+    };
+
+    function switchPage(pageId) {
+        // Hide all pages, show target
+        document.querySelectorAll('.page-content').forEach(p => p.classList.remove('active'));
+        const target = document.getElementById('page-' + pageId);
+        if (target) target.classList.add('active');
+
+        // Update sidebar active state
+        document.querySelectorAll('.sidebar-link').forEach(l => l.classList.remove('active'));
+        const activeLink = document.querySelector(`.sidebar-link[data-page="${pageId}"]`);
+        if (activeLink) activeLink.classList.add('active');
+
+        // Update topbar title
+        const lang = localStorage.getItem('lailab_lang') || 'en';
+        const topTitle = document.querySelector('.topbar-title h1');
+        const topSub = document.querySelector('.topbar-title p');
+        if (topTitle && pageTitles[pageId]) topTitle.textContent = pageTitles[pageId][lang] || pageTitles[pageId].en;
+        if (topSub && pageSubtitles[pageId]) topSub.textContent = pageSubtitles[pageId][lang] || pageSubtitles[pageId].en;
+
+        // Close sidebar on mobile
+        if (sidebar) sidebar.classList.remove('open');
+    }
+
     document.querySelectorAll('.sidebar-link').forEach(link => {
         link.addEventListener('click', (e) => {
             e.preventDefault();
-            document.querySelectorAll('.sidebar-link').forEach(l => l.classList.remove('active'));
-            link.classList.add('active');
-
-            // Close sidebar on mobile
-            if (sidebar) sidebar.classList.remove('open');
+            const pageId = link.dataset.page;
+            switchPage(pageId);
         });
     });
+
+    // ---- Deployment Page Logic ----
+    const deployModelAuto = document.getElementById('deployModelAuto');
+    const deployUploadGroup = document.getElementById('deployUploadGroup');
+    const deployFileDrop = document.getElementById('deployFileDrop');
+    const deployFileInput = document.getElementById('deployFileInput');
+    const deployFileInfo = document.getElementById('deployFileInfo');
+    const deployFileName = document.getElementById('deployFileName');
+    const deployFileRemove = document.getElementById('deployFileRemove');
+    const btnDeploy = document.getElementById('btnDeploy');
+    const btnPingDevice = document.getElementById('btnPingDevice');
+
+    let currentDeployModel = null; // { filename, display_name, size }
+
+    // Deploy file upload
+    if (deployFileDrop && deployFileInput) {
+        deployFileDrop.addEventListener('click', () => deployFileInput.click());
+        deployFileDrop.addEventListener('dragover', (e) => { e.preventDefault(); deployFileDrop.classList.add('dragover'); });
+        deployFileDrop.addEventListener('dragleave', () => deployFileDrop.classList.remove('dragover'));
+        deployFileDrop.addEventListener('drop', (e) => {
+            e.preventDefault();
+            deployFileDrop.classList.remove('dragover');
+            if (e.dataTransfer.files.length) handleDeployFile(e.dataTransfer.files[0]);
+        });
+        deployFileInput.addEventListener('change', () => {
+            if (deployFileInput.files.length) handleDeployFile(deployFileInput.files[0]);
+        });
+    }
+
+    let deployUploadedFile = null;
+    function handleDeployFile(file) {
+        if (!file.name.endsWith('.cvimodel')) {
+            alert('Only .cvimodel files are allowed.');
+            return;
+        }
+        deployUploadedFile = file;
+        if (deployFileName) deployFileName.textContent = `${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`;
+        if (deployFileInfo) deployFileInfo.classList.remove('hidden');
+        if (deployFileDrop) deployFileDrop.classList.add('hidden');
+        updateDeployButton();
+    }
+
+    if (deployFileRemove) {
+        deployFileRemove.addEventListener('click', () => {
+            deployUploadedFile = null;
+            if (deployFileInput) deployFileInput.value = '';
+            if (deployFileInfo) deployFileInfo.classList.add('hidden');
+            if (deployFileDrop) deployFileDrop.classList.remove('hidden');
+            updateDeployButton();
+        });
+    }
+
+    // Auto-detect model from outputs folder
+    function refreshDeployModels() {
+        fetch('/api/models')
+            .then(r => r.json())
+            .then(data => {
+                const models = data.models || [];
+                if (models.length > 0) {
+                    // Show auto-detected model
+                    currentDeployModel = models[0]; // newest
+                    const nameEl = document.getElementById('deployModelName');
+                    const sizeEl = document.getElementById('deployModelSize');
+                    if (nameEl) nameEl.textContent = currentDeployModel.display_name;
+                    if (sizeEl) sizeEl.textContent = `${(currentDeployModel.size / (1024 * 1024)).toFixed(1)} MB`;
+                    if (deployModelAuto) deployModelAuto.classList.remove('hidden');
+                    if (deployUploadGroup) deployUploadGroup.classList.add('hidden');
+                } else {
+                    // No model — show upload area
+                    currentDeployModel = null;
+                    if (deployModelAuto) deployModelAuto.classList.add('hidden');
+                    if (deployUploadGroup) deployUploadGroup.classList.remove('hidden');
+                }
+                updateDeployButton();
+            })
+            .catch(() => {});
+    }
+    // Make it accessible from renderPipeline
+    window.refreshDeployModels = refreshDeployModels;
+
+    function updateDeployButton() {
+        if (!btnDeploy) return;
+        const hasModel = !!currentDeployModel || !!deployUploadedFile;
+        btnDeploy.disabled = !hasModel;
+    }
+
+    // Ping button (frontend only — backend to be added later)
+    if (btnPingDevice) {
+        btnPingDevice.addEventListener('click', () => {
+            const ip = document.getElementById('deployDeviceIp')?.value;
+            if (!ip) return;
+            btnPingDevice.className = 'btn-ping';
+            btnPingDevice.querySelector('span').textContent = 'Pinging...';
+            // TODO: call backend /api/device/ping endpoint
+            setTimeout(() => {
+                btnPingDevice.querySelector('span').textContent = 'Ping';
+                // Placeholder — will be connected to backend
+            }, 1500);
+        });
+    }
+
+    // Deploy button (frontend only — backend to be added later)
+    if (btnDeploy) {
+        btnDeploy.addEventListener('click', () => {
+            const lang = localStorage.getItem('lailab_lang') || 'en';
+            alert(lang === 'vi' ? 'Backend triển khai sẽ được thêm sau.' : 'Deployment backend will be added later.');
+        });
+    }
+
+    // Clear deploy logs
+    const clearDeployLogs = document.getElementById('clearDeployLogs');
+    if (clearDeployLogs) {
+        clearDeployLogs.addEventListener('click', () => {
+            const console = document.getElementById('deployLogConsole');
+            if (console) {
+                const lang = localStorage.getItem('lailab_lang') || 'en';
+                console.innerHTML = `<div class="log-empty">${lang === 'vi' ? 'Đang chờ triển khai...' : 'Waiting for deployment...'}</div>`;
+            }
+        });
+    }
 
     // ---- Initialize ----
     connectWebSocket();
     loadPresets();
     checkDockerStatus();
+    refreshDeployModels();
 
     // Refresh Docker status every 30 seconds
     setInterval(checkDockerStatus, 30000);
