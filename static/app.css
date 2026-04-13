@@ -179,7 +179,8 @@
     height: 100%;
 }
 .page-content.active {
-    display: block;
+    display: flex;
+    flex-direction: column;
 }
 
 .content-grid {
@@ -195,7 +196,8 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-    height: 100%;
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
 }
 
@@ -282,7 +284,7 @@
 
 .deploy-top-row {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-columns: 0.9fr 1.1fr 1.35fr;
     gap: 10px;
     flex-shrink: 0;
 }
@@ -477,15 +479,69 @@
 /* Bottom row cards */
 .deploy-status-body {
     display: flex;
-    align-items: center;
-    justify-content: center;
+    flex-direction: column;
     flex: 1;
+    overflow-y: auto;
+    padding: 8px 10px !important;
 }
 .deploy-status-text {
     font-size: 12px;
     color: var(--text-tertiary);
     text-align: center;
+    margin: auto;
 }
+
+/* Deploy step pipeline */
+.deploy-step-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.deploy-step-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    transition: all var(--transition-fast);
+}
+.deploy-step-indicator {
+    width: 20px;
+    height: 20px;
+    min-width: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    font-size: 11px;
+    font-weight: 700;
+}
+.deploy-step-info { flex: 1; min-width: 0; }
+.deploy-step-name { font-size: 11px; font-weight: 600; color: var(--text-primary); }
+.deploy-step-detail { font-size: 10px; color: var(--text-tertiary); font-family: var(--font-mono); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Pending */
+.deploy-step-item.pending .deploy-step-indicator { background: var(--bg-glass); border: 1.5px solid var(--border-secondary); color: var(--text-tertiary); }
+.deploy-step-item.pending .deploy-step-name { color: var(--text-tertiary); }
+
+/* Running */
+.deploy-step-item.running { background: rgba(99, 102, 241, 0.06); border-color: rgba(99, 102, 241, 0.2); }
+.deploy-step-item.running .deploy-step-indicator { background: var(--accent-primary); color: #fff; animation: stepPulse 1.5s ease-in-out infinite; }
+.deploy-step-item.running .deploy-step-name { color: var(--accent-primary); }
+
+/* Completed */
+.deploy-step-item.completed .deploy-step-indicator { background: var(--success); color: #fff; }
+
+/* Failed */
+.deploy-step-item.failed { background: rgba(239, 68, 68, 0.06); border-color: rgba(239, 68, 68, 0.2); }
+.deploy-step-item.failed .deploy-step-indicator { background: var(--error); color: #fff; }
+.deploy-step-item.failed .deploy-step-name { color: var(--error); }
+.deploy-step-item.failed .deploy-step-detail { color: var(--error); }
+
+/* Skipped */
+.deploy-step-item.skipped { opacity: 0.45; }
+.deploy-step-item.skipped .deploy-step-indicator { background: var(--bg-glass); border: 1.5px dashed var(--border-secondary); color: var(--text-tertiary); }
 .deploy-log-card {
     display: flex;
     flex-direction: column;
@@ -495,9 +551,10 @@
 }
 .log-console-sm {
     flex: 1;
-    min-height: 80px;
+    min-height: 0;
     max-height: none;
     font-size: 11px;
+    overflow-y: auto;
 }
 
 /* Model Prep bottom row: 50/50 split */
@@ -1056,8 +1113,8 @@
     border: 1px solid var(--border-primary);
     border-radius: var(--radius-md);
     padding: 10px;
-    max-height: 200px;
-    min-height: 100px;
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
     font-family: var(--font-mono);
     font-size: 11px;
@@ -1297,4 +1354,74 @@
 .log-console::-webkit-scrollbar-thumb:hover,
 .panel-body::-webkit-scrollbar-thumb:hover {
     background: var(--text-tertiary);
+}
+
+/* ---- Deploy Bottom Row 3 columns ---- */
+.deploy-bottom-row-3 {
+    grid-template-columns: 200px 1fr 1fr !important;
+}
+
+/* ---- SSH Terminal ---- */
+.deploy-ssh-card {
+    display: flex;
+    flex-direction: column;
+}
+.ssh-connect-bar {
+    display: flex;
+    gap: 6px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-primary);
+    background: var(--bg-tertiary);
+    align-items: center;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+}
+.ssh-console {
+    flex: 1;
+    min-height: 0;
+    padding: 10px 12px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-all;
+    overflow-y: auto;
+    background: #0d0d0f;
+    color: #10b981;
+    border: none;
+    margin: 0;
+}
+[data-theme="light"] .ssh-console {
+    background: #f5f5f7;
+    color: #16a34a;
+}
+.ssh-console .ssh-error {
+    color: #ef4444;
+}
+.ssh-console .ssh-system {
+    color: #6366f1;
+}
+.ssh-input-bar {
+    padding: 6px 10px;
+    border-top: 1px solid var(--border-primary);
+    flex-shrink: 0;
+}
+.ssh-console::-webkit-scrollbar {
+    width: 6px;
+}
+.ssh-console::-webkit-scrollbar-track {
+    background: transparent;
+}
+.ssh-console::-webkit-scrollbar-thumb {
+    background: var(--border-secondary);
+    border-radius: 3px;
+}
+.ssh-console::-webkit-scrollbar-thumb:hover {
+    background: var(--text-tertiary);
+}
+
+@media (max-width: 1024px) {
+    .deploy-bottom-row-3 {
+        grid-template-columns: 1fr !important;
+    }
 }

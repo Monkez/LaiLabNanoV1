@@ -8,10 +8,13 @@ Real Docker integration for YOLO model conversion pipeline.
 import os
 import json
 import subprocess
+import socket
 import threading
 import time
 import uuid
 import shlex
+import serial
+import serial.tools.list_ports
 import signal
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_from_directory, send_file, Response
@@ -535,17 +538,45 @@ def run_conversion_pipeline(job):
             pt_filename = f'{model_name}.pt'
             emit_log(job, f'Model {pt_filename} will be auto-downloaded by ultralytics if not cached.')
 
-        # Download export_to_onnx.py
-        emit_log(job, 'Downloading export_to_onnx.py...')
-        success, _ = docker_exec(
-            docker_container,
-            'curl -L -O https://raw.githubusercontent.com/ret7020/LicheeRVNano/refs/heads/master/Projects/Yolov8/export_to_onnx.py',
-            cwd=workspace_dir,
-            job=job,
-            timeout=120
-        )
+        # Create robust export_to_onnx.py instead of downloading an outdated one
+        emit_log(job, 'Generating robust export_to_onnx.py script...')
+        export_script_code = """from ultralytics import YOLO
+import sys
+
+def patch_detect(model):
+    detect_layer = model.model[-1]
+    
+    # Use class replacement instead of MethodType to survive deepcopy in Ultralytics Exporter
+    class CustomDetect(type(detect_layer)):
+        def forward(self, x):
+            cv2 = getattr(self, 'cv2', None)
+            cv3 = getattr(self, 'cv3', None)
+            
+            # Support YOLOv10 architecture
+            if cv2 is None or cv3 is None:
+                cv2 = getattr(self, 'one2one_cv2', None)
+                cv3 = getattr(self, 'one2one_cv3', None)
+                
+            x_reg = [cv2[i](x[i]) for i in range(self.nl)]
+            x_cls = [cv3[i](x[i]) for i in range(self.nl)]
+            return x_reg + x_cls
+
+    detect_layer.__class__ = CustomDetect
+
+model_path = sys.argv[1]
+input_size = (int(sys.argv[2]), int(sys.argv[3]))
+
+model = YOLO(model_path)
+patch_detect(model.model)
+# Simplify disabled to prevent graph optimizations from messing up TPU-MLIR
+model.export(format='onnx', opset=11, imgsz=input_size, simplify=False)
+"""
+        import base64
+        script_b64 = base64.b64encode(export_script_code.encode('utf-8')).decode('utf-8')
+        cmd_write = f"echo '{script_b64}' | base64 -d > {workspace_dir}/export_to_onnx.py"
+        success, _ = docker_exec(docker_container, cmd_write, job=job)
         if not success:
-            step_fail(job, 1, 'Failed to download export_to_onnx.py.')
+            step_fail(job, 1, 'Failed to inject export_to_onnx.py to container.')
             return
 
         # Ensure real PyTorch + ultralytics are installed
@@ -1013,14 +1044,14 @@ def list_models():
 def get_presets():
     presets = [
         {
-            'id': 'yolov8n_640',
-            'name': 'YOLOv8 Nano (640x640)',
-            'description_en': 'Standard YOLOv8n with 640x640 input - Best accuracy',
-            'description_vi': 'YOLOv8n tiêu chuẩn 640x640 - Độ chính xác tốt nhất',
+            'id': 'yolo11n_320',
+            'name': 'YOLO11 Nano (320x320)',
+            'description_en': 'YOLO11n 320x320 - Optimized for edge (Default)',
+            'description_vi': 'YOLO11n 320x320 - Tối ưu nhất cho thiết bị biên (Mặc định)',
             'config': {
-                'model_name': 'yolov8n',
-                'input_width': 640,
-                'input_height': 640,
+                'model_name': 'yolo11n',
+                'input_width': 320,
+                'input_height': 320,
                 'calibration_count': 100,
                 'quantize': 'int8',
                 'processor': 'cv181x',
@@ -1058,14 +1089,14 @@ def get_presets():
             }
         },
         {
-            'id': 'yolo11n_320',
-            'name': 'YOLO11 Nano (320x320)',
-            'description_en': 'YOLO11n 320x320 - Optimized for edge',
-            'description_vi': 'YOLO11n 320x320 - Tối ưu cho thiết bị biên',
+            'id': 'yolov8n_640',
+            'name': 'YOLOv8 Nano (640x640)',
+            'description_en': 'Standard YOLOv8n with 640x640 input - Best accuracy',
+            'description_vi': 'YOLOv8n tiêu chuẩn 640x640 - Độ chính xác tốt nhất',
             'config': {
-                'model_name': 'yolo11n',
-                'input_width': 320,
-                'input_height': 320,
+                'model_name': 'yolov8n',
+                'input_width': 640,
+                'input_height': 640,
                 'calibration_count': 100,
                 'quantize': 'int8',
                 'processor': 'cv181x',
@@ -1077,6 +1108,515 @@ def get_presets():
 
 
 # ============================================================
+# Deploy API and Inference Logic
+# ============================================================
+inference_thread = None
+inference_running = False
+
+def udp_listener(ip):
+    global inference_running
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # Allows address reuse
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(('', 8081))
+    except Exception as e:
+        print("Could not bind UDP 8081:", e)
+        return
+    sock.settimeout(1.0)
+    
+    while inference_running:
+        try:
+            data, addr = sock.recvfrom(4096)
+            if addr[0] == ip:
+                parsed = json.loads(data.decode('utf-8', 'ignore'))
+                socketio.emit('inference_meta', parsed, namespace='/')
+        except socket.timeout:
+            continue
+        except Exception as e:
+            pass
+    sock.close()
+
+
+@app.route('/api/device/ping', methods=['POST'])
+def ping_device():
+    """Ping a device to check if it's reachable."""
+    import platform
+    import re
+
+    req = request.json
+    ip = req.get('ip', '').strip()
+
+    if not ip:
+        return jsonify({'error': 'No IP provided', 'reachable': False}), 400
+
+    # Sanitize IP to prevent command injection
+    if not re.match(r'^[\d.]+$', ip):
+        return jsonify({'error': 'Invalid IP address', 'reachable': False}), 400
+
+    try:
+        # Platform-specific ping command
+        param = '-n' if platform.system().lower() == 'windows' else '-c'
+        cmd = ['ping', param, '2', '-w', '2000', ip]
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        reachable = result.returncode == 0
+
+        # Parse average time from ping output
+        avg_ms = '?'
+        if reachable:
+            # Windows: Average = 0ms
+            avg_match = re.search(r'Average\s*=\s*(\d+)ms', result.stdout)
+            if avg_match:
+                avg_ms = avg_match.group(1)
+            else:
+                # Linux: rtt min/avg/max/mdev = 0.123/0.456/0.789/0.012 ms
+                avg_match = re.search(r'rtt\s+.*?=\s*[\d.]+/([\d.]+)/', result.stdout)
+                if avg_match:
+                    avg_ms = avg_match.group(1)
+                else:
+                    # try time<1ms pattern (Windows)
+                    if 'time<1ms' in result.stdout or 'time=0ms' in result.stdout:
+                        avg_ms = '<1'
+
+        return jsonify({
+            'reachable': reachable,
+            'ip': ip,
+            'avg_ms': avg_ms,
+            'output': result.stdout[-300:] if result.stdout else ''
+        })
+
+    except subprocess.TimeoutExpired:
+        return jsonify({'reachable': False, 'ip': ip, 'avg_ms': '?', 'error': 'Ping timed out'})
+    except Exception as e:
+        return jsonify({'reachable': False, 'ip': ip, 'avg_ms': '?', 'error': str(e)})
+
+
+@app.route('/api/deploy', methods=['POST'])
+def deploy_to_device():
+    req = request.json
+    ip = req.get('ip', '192.168.100.2')
+    model_filename = req.get('model_filename')
+    streamWidth = req.get('streamWidth', 640)
+    streamHeight = req.get('streamHeight', 480)
+    yoloW = req.get('yoloW', 320)
+    yoloH = req.get('yoloH', 320)
+    camWidth = req.get('camWidth', 640)
+    camHeight = req.get('camHeight', 480)
+    confThresh = req.get('confThresh', 0.5)
+    nmsThresh = req.get('nmsThresh', 0.5)
+    noYolo = req.get('noYolo', False)
+    jpegQuality = req.get('jpegQuality', 70)
+    uartDev = req.get('uartDev', '/dev/ttyS0')
+    baudRate = req.get('baudRate', 115200)
+    password = req.get('password', '')
+    user = req.get('user', 'root')
+
+    model_path = os.path.join(OUTPUT_FOLDER, model_filename)
+    if not os.path.exists(model_path):
+        model_path = os.path.join(UPLOAD_FOLDER, model_filename)
+
+    if not os.path.exists(model_path):
+        return jsonify({'error': 'Model not found'}), 404
+
+    def emit_deploy_log(message, level='info'):
+        entry = {'time': time.time(), 'message': message, 'level': level}
+        socketio.emit('deploy_log', entry, namespace='/')
+
+    steps = [
+        {'name': 'Upload Model', 'status': 'pending', 'detail': ''},
+        {'name': 'Upload Binary', 'status': 'pending', 'detail': ''},
+        {'name': 'Upload Boot Script', 'status': 'pending', 'detail': ''},
+        {'name': 'Set Permissions & Autostart', 'status': 'pending', 'detail': ''},
+        {'name': 'Reboot Device', 'status': 'pending', 'detail': ''},
+    ]
+
+    def emit_steps():
+        socketio.emit('deploy_steps', {'steps': steps}, namespace='/')
+
+    def set_step(idx, status, detail=''):
+        steps[idx]['status'] = status
+        if detail:
+            steps[idx]['detail'] = detail
+        if status == 'failed':
+            for j in range(idx + 1, len(steps)):
+                steps[j]['status'] = 'skipped'
+        emit_steps()
+
+    emit_steps()
+
+    def deploy_worker():
+        import paramiko
+
+        emit_deploy_log(f'Starting deployment to {user}@{ip}...')
+
+        try:
+            emit_deploy_log(f'Connecting to {ip}...')
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ckw = {'hostname': ip, 'port': 22, 'username': user, 'timeout': 10}
+            if password != '':
+                ckw['password'] = password
+            else:
+                # Try empty password and fallback to keys
+                ckw['password'] = ''
+                ckw['allow_agent'] = True
+                ckw['look_for_keys'] = True
+            client.connect(**ckw)
+            emit_deploy_log(f'Connected to {user}@{ip}', 'success')
+
+            sftp = client.open_sftp()
+
+            def ssh_exec(cmd):
+                emit_deploy_log(f'$ {cmd}')
+                si, so, se = client.exec_command(cmd, timeout=30)
+                out = so.read().decode('utf-8', errors='replace').strip()
+                err = se.read().decode('utf-8', errors='replace').strip()
+                ec = so.channel.recv_exit_status()
+                if out:
+                    emit_deploy_log(out)
+                if err:
+                    emit_deploy_log(err, 'warning' if ec == 0 else 'error')
+                return ec
+
+            remote_model_name = model_filename
+            parts = model_filename.split('_', 1)
+            if len(parts) > 1:
+                remote_model_name = parts[1]
+
+            # Stop running app to prevent ETXTBSY upload failure
+            emit_deploy_log('Stopping any running inference processes...')
+            try:
+                ssh_exec('/etc/init.d/S99yolocam stop')
+                ssh_exec('killall -9 Yolo_CSIStream')
+            except Exception:
+                pass
+
+            # Step 0: Upload Model
+            set_step(0, 'running')
+            sz = os.path.getsize(model_path) / (1024 * 1024)
+            emit_deploy_log(f'Uploading {remote_model_name} ({sz:.1f} MB)...')
+            sftp.put(model_path, f'/root/{remote_model_name}')
+            emit_deploy_log(f'Model uploaded to /root/{remote_model_name}', 'success')
+            set_step(0, 'completed', f'{remote_model_name} ({sz:.1f} MB)')
+
+            # Step 1: Upload Binary
+            set_step(1, 'running')
+            bin_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deploy', 'Yolo_CSIStream')
+            if os.path.exists(bin_path):
+                bsz = os.path.getsize(bin_path) / (1024 * 1024)
+                emit_deploy_log(f'Uploading Yolo_CSIStream ({bsz:.1f} MB)...')
+                sftp.put(bin_path, '/root/Yolo_CSIStream')
+                emit_deploy_log('Binary uploaded to /root/Yolo_CSIStream', 'success')
+                set_step(1, 'completed', f'Yolo_CSIStream ({bsz:.1f} MB)')
+            else:
+                emit_deploy_log('Yolo_CSIStream not found in deploy/, skipping', 'warning')
+                steps[1]['status'] = 'skipped'
+                steps[1]['detail'] = 'Not found'
+                emit_steps()
+
+            # Step 2: Upload Boot Script
+            set_step(2, 'running')
+            emit_deploy_log('Creating boot script S99yolocam...')
+            # Build ARGS dynamically
+            args_list = []
+            args_list.append(f"--cam {camWidth}x{camHeight}")
+            args_list.append(f"--stream {streamWidth}x{streamHeight}")
+            args_list.append(f"--yolo {yoloW}")
+            args_list.append(f"--quality {jpegQuality}")
+            args_list.append(f"--conf {confThresh}")
+            args_list.append(f"--nms {nmsThresh}")
+            if noYolo:
+                args_list.append("--no-yolo")
+            if uartDev:
+                args_list.append(f"--uart {uartDev}")
+                args_list.append(f"--baud {baudRate}")
+            
+            args_str = " ".join(args_list)
+
+            script = f"""#!/bin/sh
+# Auto-generated by LaiLab Nano V1
+APP_BIN="/root/Yolo_CSIStream"
+MODEL="/root/{remote_model_name}"
+ARGS="{args_str}"
+LOG_FILE="/root/yolo.log"
+
+# Setup library paths for CV180xB SDK & OpenCV
+export LD_LIBRARY_PATH=/root/libs_patch/lib:/root/libs_patch/middleware_v2:/root/libs_patch/middleware_v2_3rd:/root/libs_patch/opencv:/root/libs_patch/tpu_sdk_libs:/root/libs_patch:$LD_LIBRARY_PATH
+[ -f /root/board_setup.sh ] && source /root/board_setup.sh
+
+
+case "$1" in
+  start)
+    if [ -f "$APP_BIN" ] && [ -f "$MODEL" ]; then
+        cd /root/
+        $APP_BIN $MODEL $ARGS > $LOG_FILE 2>&1 &
+    fi
+    ;;
+  stop)
+    killall Yolo_CSIStream 2>/dev/null
+    ;;
+  restart|reload)
+    $0 stop
+    sleep 1
+    $0 start
+    ;;
+  *)
+    exit 1
+esac
+exit 0
+"""
+            lp = os.path.join(OUTPUT_FOLDER, "S99yolocam")
+            with open(lp, "w", newline='\n') as f:
+                f.write(script)
+            sftp.put(lp, '/etc/init.d/S99yolocam')
+            emit_deploy_log('Boot script uploaded to /etc/init.d/S99yolocam', 'success')
+            set_step(2, 'completed', 'S99yolocam')
+
+            sftp.close()
+
+            # Step 3: Set permissions & autostart
+            set_step(3, 'running')
+            emit_deploy_log('Setting permissions and enabling autostart...')
+            ssh_exec('chmod +x /root/Yolo_CSIStream /etc/init.d/S99yolocam')
+            emit_deploy_log('Autostart service configured', 'success')
+            set_step(3, 'completed', 'Autostart enabled')
+
+            # Step 4: Reboot device
+            set_step(4, 'running')
+            emit_deploy_log('Rebooting device...')
+            try:
+                client.exec_command('nohup sh -c "sleep 1 && reboot" &', timeout=5)
+            except Exception:
+                pass
+            emit_deploy_log('Reboot command sent. Device will restart shortly.', 'success')
+            set_step(4, 'completed', 'Reboot initiated')
+
+            try:
+                client.close()
+            except Exception:
+                pass
+
+            emit_deploy_log('Deployment completed! Device is rebooting.', 'success')
+            socketio.emit('deploy_complete', {'status': 'success'}, namespace='/')
+
+        except Exception as e:
+            msg = str(e)
+            emit_deploy_log(f'Deployment failed: {msg}', 'error')
+            for i, s in enumerate(steps):
+                if s['status'] == 'running':
+                    set_step(i, 'failed', msg)
+                    break
+            socketio.emit('deploy_complete', {'status': 'failed', 'error': msg}, namespace='/')
+
+    threading.Thread(target=deploy_worker, daemon=True).start()
+    return jsonify({'status': 'deploying'})
+
+# ============================================================
+# Serial / UART Logic
+# ============================================================
+serial_port_obj = None
+serial_thread = None
+serial_running = False
+
+def serial_worker():
+    global serial_port_obj, serial_running
+    while serial_running and serial_port_obj and serial_port_obj.is_open:
+        try:
+            if serial_port_obj.in_waiting > 0:
+                data = serial_port_obj.read(serial_port_obj.in_waiting)
+                try:
+                    text_data = data.decode('utf-8')
+                except UnicodeDecodeError:
+                    text_data = data.decode('ascii', 'ignore')
+                socketio.emit('serial_data', {'text': text_data}, namespace='/')
+                time.sleep(0.01)
+            else:
+                time.sleep(0.05)
+        except serial.SerialException as e:
+            socketio.emit('serial_error', {'error': str(e)}, namespace='/')
+            serial_running = False
+            if serial_port_obj:
+                serial_port_obj.close()
+                serial_port_obj = None
+            break
+        except Exception:
+            time.sleep(0.05)
+
+@app.route('/api/serial/ports', methods=['GET'])
+def get_serial_ports():
+    ports = serial.tools.list_ports.comports()
+    port_list = [{'port': p.device, 'desc': p.description} for p in ports]
+    return jsonify(port_list)
+
+@app.route('/api/serial/connect', methods=['POST'])
+def connect_serial():
+    global serial_port_obj, serial_running, serial_thread
+    req = request.json
+    port = req.get('port')
+    baudrate = int(req.get('baudrate', 115200))
+    
+    if serial_port_obj and serial_port_obj.is_open:
+        serial_running = False
+        serial_port_obj.close()
+        
+    try:
+        serial_port_obj = serial.Serial(port, baudrate, timeout=1)
+        serial_running = True
+        serial_thread = threading.Thread(target=serial_worker, daemon=True)
+        serial_thread.start()
+        return jsonify({'status': 'connected'})
+    except Exception as e:
+        serial_port_obj = None
+        serial_running = False
+        return jsonify({'error': str(e)}), 400
+
+@app.route('/api/serial/disconnect', methods=['POST'])
+def disconnect_serial():
+    global serial_port_obj, serial_running
+    serial_running = False
+    if serial_port_obj and serial_port_obj.is_open:
+        serial_port_obj.close()
+        serial_port_obj = None
+    return jsonify({'status': 'disconnected'})
+
+@app.route('/api/serial/write', methods=['POST'])
+def write_serial():
+    global serial_port_obj
+    req = request.json
+    text = req.get('text', '')
+    if serial_port_obj and serial_port_obj.is_open:
+        try:
+            serial_port_obj.write((text + '\r\n').encode('utf-8'))
+            return jsonify({'status': 'ok'})
+        except Exception as e:
+            return jsonify({'error': str(e)}), 400
+    return jsonify({'error': 'Not connected'}), 400
+
+# ============================================================
+# SSH Terminal Logic
+# ============================================================
+ssh_client = None
+ssh_channel = None
+ssh_running = False
+ssh_read_thread = None
+
+def ssh_reader():
+    global ssh_running, ssh_channel
+    while ssh_running and ssh_channel:
+        try:
+            if ssh_channel.recv_ready():
+                data = ssh_channel.recv(4096)
+                if data:
+                    text = data.decode('utf-8', errors='replace')
+                    socketio.emit('ssh_data', {'text': text}, namespace='/')
+                else:
+                    break
+            elif ssh_channel.recv_stderr_ready():
+                data = ssh_channel.recv_stderr(4096)
+                if data:
+                    text = data.decode('utf-8', errors='replace')
+                    socketio.emit('ssh_data', {'text': text, 'error': True}, namespace='/')
+            else:
+                time.sleep(0.05)
+        except Exception as e:
+            socketio.emit('ssh_data', {'text': f'\r\n[Connection lost: {e}]\r\n', 'error': True}, namespace='/')
+            break
+    ssh_running = False
+
+@app.route('/api/ssh/connect', methods=['POST'])
+def ssh_connect():
+    global ssh_client, ssh_channel, ssh_running, ssh_read_thread
+    try:
+        import paramiko
+    except ImportError:
+        return jsonify({'error': 'paramiko not installed. Run: pip install paramiko'}), 500
+
+    req = request.json
+    host = req.get('host', '192.168.100.2')
+    user = req.get('user', 'root')
+    password = req.get('password', '')
+    port = int(req.get('port', 22))
+
+    # Close existing session
+    if ssh_client:
+        try:
+            ssh_running = False
+            if ssh_channel:
+                ssh_channel.close()
+            ssh_client.close()
+        except:
+            pass
+        ssh_client = None
+        ssh_channel = None
+
+    try:
+        ssh_client = paramiko.SSHClient()
+        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        connect_kwargs = {'hostname': host, 'port': port, 'username': user, 'timeout': 10}
+        if password != '':
+            connect_kwargs['password'] = password
+        else:
+            connect_kwargs['password'] = ''
+            connect_kwargs['allow_agent'] = True
+            connect_kwargs['look_for_keys'] = True
+
+        ssh_client.connect(**connect_kwargs)
+
+        # Open interactive shell
+        ssh_channel = ssh_client.invoke_shell(term='xterm', width=120, height=40)
+        ssh_channel.settimeout(0.1)
+
+        ssh_running = True
+        ssh_read_thread = threading.Thread(target=ssh_reader, daemon=True)
+        ssh_read_thread.start()
+
+        return jsonify({'status': 'connected', 'host': host, 'user': user})
+    except Exception as e:
+        ssh_client = None
+        ssh_channel = None
+        return jsonify({'error': str(e)}), 400
+
+@app.route('/api/ssh/disconnect', methods=['POST'])
+def ssh_disconnect():
+    global ssh_client, ssh_channel, ssh_running
+    ssh_running = False
+    if ssh_channel:
+        try:
+            ssh_channel.close()
+        except:
+            pass
+        ssh_channel = None
+    if ssh_client:
+        try:
+            ssh_client.close()
+        except:
+            pass
+        ssh_client = None
+    return jsonify({'status': 'disconnected'})
+
+@app.route('/api/ssh/write', methods=['POST'])
+def ssh_write():
+    global ssh_channel
+    req = request.json
+    text = req.get('text', '')
+    if ssh_channel:
+        try:
+            ssh_channel.send(text + '\n')
+            return jsonify({'status': 'ok'})
+        except Exception as e:
+            return jsonify({'error': str(e)}), 400
+    return jsonify({'error': 'Not connected'}), 400
+
+
+# ============================================================
 # WebSocket events
 # ============================================================
 @socketio.on('connect')
@@ -1084,6 +1624,119 @@ def handle_connect():
     print('Client connected')
     emit('connected', {'status': 'ok'})
 
+@socketio.on('start_inference')
+def handle_start_inference(data):
+    global inference_running, inference_thread
+    ip = data.get('ip')
+    if ip and not inference_running:
+        inference_running = True
+        inference_thread = threading.Thread(target=udp_listener, args=(ip,), daemon=True)
+        inference_thread.start()
+
+@socketio.on('stop_inference')
+def handle_stop_inference(data):
+    global inference_running
+    inference_running = False
+
+@app.route('/api/stream_proxy')
+def stream_proxy():
+    ip = request.args.get('ip', '192.168.100.2')
+    port = int(request.args.get('port', 8080))
+
+    def generate():
+        import time
+        video_frame_count = 0
+        video_last_fps_time = time.time()
+        _reconnect_count = 0
+        
+        while True:
+            sock = None
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1.5)
+                sock.connect((ip, port))
+                
+                request_str = (
+                    f"GET / HTTP/1.0\r\n"
+                    f"Host: {ip}:{port}\r\n"
+                    f"Accept: multipart/x-mixed-replace\r\n"
+                    f"Connection: close\r\n\r\n"
+                )
+                sock.sendall(request_str.encode())
+                sock.settimeout(30.0)
+                
+                header_buf = b''
+                while b'\r\n\r\n' not in header_buf:
+                    chunk = sock.recv(1024)
+                    if not chunk:
+                        break
+                    header_buf += chunk
+                    
+                if b'200' not in header_buf.split(b'\r\n')[0]:
+                    raise Exception("Bad HTTP response")
+                
+                remaining = header_buf.split(b'\r\n\r\n', 1)[1]
+                buf = bytearray(remaining)
+                
+                while True:
+                    try:
+                        chunk = sock.recv(65536)
+                    except socket.timeout:
+                        break
+                    
+                    if not chunk:
+                        break
+                    
+                    buf.extend(chunk)
+                    
+                    while True:
+                        start = buf.find(b'\xff\xd8')
+                        if start == -1:
+                            if len(buf) > 2:
+                                del buf[:len(buf)-2]
+                            break
+                        
+                        end = buf.find(b'\xff\xd9', start + 2)
+                        if end == -1:
+                            if start > 0:
+                                del buf[:start]
+                            break
+                            
+                        jpg_bytes = bytes(buf[start:end+2])
+                        del buf[:end+2]
+                        
+                        video_frame_count += 1
+                        now = time.time()
+                        if now - video_last_fps_time >= 1.0:
+                            fps = video_frame_count / (now - video_last_fps_time)
+                            socketio.emit('video_meta', {'fps': round(fps, 1)}, namespace='/')
+                            video_frame_count = 0
+                            video_last_fps_time = now
+                        
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n'
+                               b'Content-Length: ' + str(len(jpg_bytes)).encode() + b'\r\n\r\n' +
+                               jpg_bytes + b'\r\n')
+                        
+                    if len(buf) > 2 * 1024 * 1024:
+                        buf.clear()
+                        
+            except GeneratorExit:
+                if sock:
+                    try: sock.close()
+                    except: pass
+                return
+            except Exception as e:
+                pass
+            finally:
+                if sock:
+                    try: sock.close()
+                    except: pass
+            
+            _reconnect_count += 1
+            time.sleep(min(_reconnect_count * 0.1, 0.5))
+
+    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @socketio.on('disconnect')
 def handle_disconnect():

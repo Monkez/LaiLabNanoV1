@@ -42,11 +42,11 @@
             </div>
 
             <nav class="sidebar-nav">
-                <a href="#" class="sidebar-link" data-page="dashboard">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-                    <span data-i18n="app_nav_dashboard">Dashboard</span>
+                <a href="#" class="sidebar-link active" data-page="guide">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>
+                    <span data-i18n="app_nav_guide">User Guide</span>
                 </a>
-                <a href="#" class="sidebar-link active" data-page="model-prep">
+                <a href="#" class="sidebar-link" data-page="model-prep">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
                     <span data-i18n="app_nav_model_prep">Model Preparation</span>
                 </a>
@@ -101,8 +101,42 @@
 
             <!-- Content Area -->
             <div class="app-content">
+                <!-- ====== PAGE: User Guide ====== -->
+                <div class="page-content active" id="page-guide">
+                    <div class="deploy-layout">
+                        <div class="panel" style="max-width:800px; margin:0 auto; width:100%;">
+                            <div class="panel-header">
+                                <h2 data-i18n="guide_title">Quick Start Guide</h2>
+                            </div>
+                            <div class="panel-body" style="display:flex; flex-direction:column; gap:24px; padding: 24px;">
+                                <div style="display:flex; gap:16px;">
+                                    <div style="flex-shrink:0; width:44px; height:44px; border-radius:50%; background:var(--accent-glow); border:1px solid var(--border-accent); display:flex; align-items:center; justify-content:center; color:var(--accent-primary); font-weight:700; font-size:18px;">1</div>
+                                    <div>
+                                        <h3 style="margin:0 0 6px 0; font-size:15px; font-weight:600; color:var(--text-primary);" data-i18n="guide_step_1">1. Model Preparation</h3>
+                                        <p style="margin:0; font-size:13px; color:var(--text-secondary); line-height:1.6;" data-i18n="guide_step_1_desc">Navigate to "Model Preparation" to upload a raw YOLO `.pt` model or pick a preset. Click "Start Conversion" to automate the ONNX → MLIR → CVI process. Ensure Docker is running in background.</p>
+                                    </div>
+                                </div>
+                                <div style="display:flex; gap:16px;">
+                                    <div style="flex-shrink:0; width:44px; height:44px; border-radius:50%; background:var(--accent-glow); border:1px solid var(--border-accent); display:flex; align-items:center; justify-content:center; color:var(--accent-primary); font-weight:700; font-size:18px;">2</div>
+                                    <div>
+                                        <h3 style="margin:0 0 6px 0; font-size:15px; font-weight:600; color:var(--text-primary);" data-i18n="guide_step_2">2. Deployment</h3>
+                                        <p style="margin:0; font-size:13px; color:var(--text-secondary); line-height:1.6;" data-i18n="guide_step_2_desc">Once the model becomes a `.cvimodel`, go to "Deployment". Enter your LicheeRV Nano IP address and click "Deploy". The system will automatically configure, transfer the model, and reboot the CSI stream on the edge device.</p>
+                                    </div>
+                                </div>
+                                <div style="display:flex; gap:16px;">
+                                    <div style="flex-shrink:0; width:44px; height:44px; border-radius:50%; background:var(--accent-glow); border:1px solid var(--border-accent); display:flex; align-items:center; justify-content:center; color:var(--accent-primary); font-weight:700; font-size:18px;">3</div>
+                                    <div>
+                                        <h3 style="margin:0 0 6px 0; font-size:15px; font-weight:600; color:var(--text-primary);" data-i18n="guide_step_3">3. Test Inference</h3>
+                                        <p style="margin:0; font-size:13px; color:var(--text-secondary); line-height:1.6;" data-i18n="guide_step_3_desc">Go to "Test Inference" to test your deployed model in real-time. Use the Video stream to verify visual detection, and open the Serial Monitor to capture bounding box metrics via UART if configured.</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- ====== PAGE: Model Preparation ====== -->
-                <div class="page-content active" id="page-model-prep">
+                <div class="page-content" id="page-model-prep">
                     <div class="deploy-layout">
                         <!-- Download banner (shown when conversion completes) -->
                         <div class="download-banner hidden" id="downloadBanner">
@@ -152,13 +186,13 @@
                                     <div class="config-row">
                                         <label for="modelName" data-i18n="form_model_name">Name</label>
                                         <div class="config-inputs">
-                                            <input type="text" id="modelName" class="form-input form-input-sm" value="yolov8n" placeholder="e.g. yolov8n">
+                                            <input type="text" id="modelName" class="form-input form-input-sm" value="yolo11n" placeholder="e.g. yolo11n">
                                         </div>
                                     </div>
                                     <div class="config-row">
                                         <label for="processor" data-i18n="form_processor">Processor</label>
                                         <div class="config-inputs">
-                                            <select id="processor" class="form-select form-input-sm">
+                                            <select id="processor" class="form-select form-input-sm" style="width: 100%; min-width: 180px;">
                                                 <option value="cv181x">CV181x (LicheeRV Nano)</option>
                                                 <option value="cv180x">CV180x</option>
                                             </select>
@@ -167,16 +201,16 @@
                                     <div class="config-row">
                                         <label data-i18n="form_input_width">Resolution</label>
                                         <div class="config-inputs">
-                                            <input type="number" id="inputWidth" class="form-input form-input-sm" value="640" min="32" max="1280" step="32">
+                                            <input type="number" id="inputWidth" class="form-input form-input-sm" value="320" min="32" max="1280" step="32">
                                             <span class="config-x">×</span>
-                                            <input type="number" id="inputHeight" class="form-input form-input-sm" value="640" min="32" max="1280" step="32">
+                                            <input type="number" id="inputHeight" class="form-input form-input-sm" value="320" min="32" max="1280" step="32">
                                         </div>
                                     </div>
                                     <div class="config-divider"></div>
                                     <div class="config-row">
                                         <label for="quantize" data-i18n="form_quantize">Quantize</label>
                                         <div class="config-inputs">
-                                            <select id="quantize" class="form-select form-input-sm">
+                                            <select id="quantize" class="form-select form-input-sm" style="width: 100%;">
                                                 <option value="int8">INT8</option>
                                                 <option value="bf16">BF16</option>
                                             </select>
@@ -185,7 +219,7 @@
                                     <div class="config-row">
                                         <label for="calibrationCount" data-i18n="form_calibration_count">Calibration</label>
                                         <div class="config-inputs">
-                                            <input type="number" id="calibrationCount" class="form-input form-input-sm" value="100" min="10" max="1000" step="10">
+                                            <input type="number" id="calibrationCount" class="form-input form-input-sm" value="100" min="10" max="1000" step="10" style="width: 100%;">
                                         </div>
                                     </div>
                                 </div>
@@ -201,7 +235,7 @@
                                     <div class="config-row">
                                         <label for="dockerContainer" data-i18n="form_docker_container">Docker</label>
                                         <div class="config-inputs">
-                                            <select id="dockerContainer" class="form-select form-input-sm">
+                                            <select id="dockerContainer" class="form-select form-input-sm" style="width: 100%; min-width: 260px;">
                                                 <option value="TPU-LAILAB-NANO-CONTAINER">TPU-LAILAB-NANO</option>
                                             </select>
                                         </div>
@@ -301,15 +335,15 @@
                                 </div>
                             </div>
 
-                            <!-- Card 2: Device Connection -->
+                            <!-- Card 2: Device Connection + Change IP -->
                             <div class="deploy-card">
                                 <div class="deploy-card-header">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
                                     <span data-i18n="deploy_device_section">Device</span>
                                 </div>
-                                <div class="deploy-card-body">
+                                <div class="deploy-card-body deploy-config-body">
                                     <div class="input-with-action">
-                                        <input type="text" id="deployDeviceIp" class="form-input" value="192.168.42.1" placeholder="192.168.42.1">
+                                        <input type="text" id="deployDeviceIp" class="form-input" value="192.168.100.2" placeholder="192.168.100.2">
                                         <button type="button" class="btn-ping" id="btnPingDevice" title="Test connection">
                                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
                                             <span>Ping</span>
@@ -321,42 +355,23 @@
                                             <span data-i18n="deploy_device_offline">Not connected</span>
                                         </div>
                                     </div>
-                                    <!-- Deploy Button -->
-                                    <button type="button" class="btn-primary btn-submit btn-deploy" id="btnDeploy" disabled>
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                                        <span data-i18n="deploy_start">Deploy to Device</span>
-                                    </button>
-                                </div>
-                            </div>
-
-                            <!-- Card 3: Configuration -->
-                            <div class="deploy-card">
-                                <div class="deploy-card-header">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                                    <span data-i18n="deploy_configuration">Configuration</span>
-                                </div>
-                                <div class="deploy-card-body deploy-config-body">
-                                    <div class="config-row">
-                                        <label data-i18n="deploy_stream_res_label">Stream</label>
+                                    <div class="config-row" style="margin-top:10px">
+                                        <label>SSH User</label>
                                         <div class="config-inputs">
-                                            <input type="number" id="streamWidth" class="form-input form-input-sm" value="1280" min="320" max="1920">
-                                            <span class="config-x">×</span>
-                                            <input type="number" id="streamHeight" class="form-input form-input-sm" value="720" min="240" max="1080">
+                                            <input type="text" id="sshUser" class="form-input form-input-sm" value="root" placeholder="User">
                                         </div>
                                     </div>
                                     <div class="config-row">
-                                        <label data-i18n="deploy_yolo_res_label">YOLO Input</label>
+                                        <label>Password</label>
                                         <div class="config-inputs">
-                                            <input type="number" id="yoloInputW" class="form-input form-input-sm" value="320" min="32" max="1280" step="32">
-                                            <span class="config-x">×</span>
-                                            <input type="number" id="yoloInputH" class="form-input form-input-sm" value="320" min="32" max="1280" step="32">
+                                            <input type="password" id="sshPassword" class="form-input form-input-sm" placeholder="(optional)">
                                         </div>
                                     </div>
                                     <div class="config-divider"></div>
                                     <div class="config-row">
                                         <label data-i18n="deploy_change_ip">Change IP</label>
                                         <div class="config-inputs">
-                                            <input type="text" id="newDeviceIp" class="form-input form-input-sm" placeholder="192.168.1.100">
+                                            <input type="text" id="newDeviceIp" class="form-input form-input-sm" value="192.168.100.2" placeholder="192.168.100.2">
                                         </div>
                                     </div>
                                     <div class="config-row">
@@ -365,15 +380,82 @@
                                             <input type="text" id="newSubnetMask" class="form-input form-input-sm" value="255.255.255.0">
                                         </div>
                                     </div>
-                                    <button type="button" class="btn-secondary btn-sm" id="btnApplyIp">
+                                    <button type="button" class="btn-secondary btn-sm" id="btnApplyIp" style="width:100%">
                                         <span data-i18n="deploy_apply_ip">Apply IP</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Card 3: Configuration + Deploy Button -->
+                            <div class="deploy-card">
+                                <div class="deploy-card-header">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                                    <span data-i18n="deploy_configuration">Configuration</span>
+                                </div>
+                                <div class="deploy-card-body deploy-config-body">
+                                    <div class="config-row">
+                                        <label>Camera</label>
+                                        <div class="config-inputs">
+                                            <input type="number" id="camWidth" class="form-input form-input-sm" value="640" min="320" max="1920">
+                                            <span class="config-x">×</span>
+                                            <input type="number" id="camHeight" class="form-input form-input-sm" value="480" min="240" max="1080">
+                                        </div>
+                                    </div>
+                                    <div class="config-row">
+                                        <label data-i18n="deploy_stream_res_label">Stream</label>
+                                        <div class="config-inputs">
+                                            <input type="number" id="streamWidth" class="form-input form-input-sm" value="640" min="320" max="1920" title="Stream Output Resolution">
+                                            <span class="config-x">×</span>
+                                            <input type="number" id="streamHeight" class="form-input form-input-sm" value="480" min="240" max="1080">
+                                        </div>
+                                    </div>
+                                    <div class="config-row">
+                                        <label data-i18n="deploy_yolo_res_label">YOLO Input</label>
+                                        <div class="config-inputs">
+                                            <input type="number" id="yoloInputW" class="form-input form-input-sm" value="320" min="32" max="1280" step="32" title="YOLO Model Input Size">
+                                            <span class="config-x">×</span>
+                                            <input type="number" id="yoloInputH" class="form-input form-input-sm" value="320" min="32" max="1280" step="32">
+                                        </div>
+                                    </div>
+                                    <div class="config-row">
+                                        <label>Tuning</label>
+                                        <div class="config-inputs" style="gap:4px">
+                                            <input type="number" id="confThresh" class="form-input form-input-sm" value="0.5" min="0.01" max="1.0" step="0.01" style="width:55px" title="Confidence Threshold (0.01-1.0)">
+                                            <span class="config-x" style="font-size:10px" title="NMS Threshold">NMS</span>
+                                            <input type="number" id="nmsThresh" class="form-input form-input-sm" value="0.5" min="0.01" max="1.0" step="0.01" style="width:55px" title="NMS Threshold (0.01-1.0)">
+                                        </div>
+                                    </div>
+                                    <div class="config-row">
+                                        <label>Options</label>
+                                        <div class="config-inputs" style="gap:24px;">
+                                            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px" title="Stream only, no AI processing">
+                                                <input type="checkbox" id="noYolo"> No YOLO
+                                            </label>
+                                            <div style="display:flex;align-items:center;gap:6px">
+                                                <span style="font-size:11px" title="JPEG Compression Quality (1-100)">JPG Quality:</span>
+                                                <input type="number" id="jpegQuality" class="form-input form-input-sm" value="70" min="1" max="100" style="width:60px; padding:4px; text-align:center;">
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="config-row">
+                                        <label>UART</label>
+                                        <div class="config-inputs" style="gap:6px;">
+                                            <input type="text" id="uartDev" class="form-input form-input-sm" value="/dev/ttyS0" style="width:95px; text-align:center; padding:4px;" title="UART Device Path">
+                                            <input type="number" id="baudRate" class="form-input form-input-sm" value="115200" style="width:85px; text-align:center; padding:4px;" title="Baudrate">
+                                        </div>
+                                    </div>
+                                    <div class="config-divider"></div>
+                                    <!-- Deploy Button at bottom of Configuration -->
+                                    <button type="button" class="btn-primary btn-submit btn-deploy" id="btnDeploy" disabled style="width:100%">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                        <span data-i18n="deploy_start">Deploy to Device</span>
                                     </button>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- Bottom Row: Status + Logs -->
-                        <div class="deploy-bottom-row">
+                        <!-- Bottom Row: Status + Logs + SSH Terminal -->
+                        <div class="deploy-bottom-row deploy-bottom-row-3">
                             <div class="deploy-card deploy-status-card">
                                 <div class="deploy-card-header">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
@@ -395,26 +477,143 @@
                                     <div class="log-empty" data-i18n="deploy_log_empty">Waiting for deployment...</div>
                                 </div>
                             </div>
+                            <!-- SSH Terminal -->
+                            <div class="deploy-card deploy-log-card deploy-ssh-card">
+                                <div class="deploy-card-header">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                                    <span>SSH Terminal</span>
+                                    <div style="margin-left:auto; display:flex; gap:6px; align-items:center;">
+                                        <button class="btn-icon-sm" id="clearSshLogs" title="Clear terminal">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="ssh-connect-bar" style="justify-content: flex-end; padding-bottom: 0;">
+                                    <button type="button" class="btn-primary btn-sm" id="btnSshConnect">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                                        <span id="sshBtnText">Connect</span>
+                                    </button>
+                                </div>
+                                <div id="sshConsole" class="ssh-console"></div>
+                                <div class="input-with-action ssh-input-bar">
+                                    <input type="text" id="sshInput" class="form-input form-input-sm" placeholder="Type command..." disabled style="font-family:var(--font-mono);">
+                                    <button class="btn-secondary btn-sm" id="btnSshSend" disabled style="width:auto;">Send</button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
 
                 <!-- ====== PAGE: Test Inference ====== -->
-                <div class="page-content" id="page-inference">
-                    <div class="content-grid">
-                        <div class="panel" style="grid-column: 1 / -1;">
-                            <div class="panel-header">
-                                <h2 data-i18n="inference_title">Test Inference</h2>
-                            </div>
-                            <div class="panel-body">
-                                <div class="pipeline-empty">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" width="64" height="64" opacity="0.3">
-                                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-                                    </svg>
-                                    <p data-i18n="inference_coming_soon">Test Inference — Coming Soon</p>
+                <div class="page-content" id="page-inference" style="display:flex; flex-direction:column; gap:12px; height:100%; overflow:hidden; padding-bottom:0;">
+                    
+                    <!-- Row 1: Stream Monitor -->
+                    <div class="content-grid" style="flex: 1; min-height: 0; padding-bottom: 12px; border-bottom: 1px solid var(--border-primary); margin-bottom: 0;">
+                        <!-- Stream Setup (Left Column) -->
+                        <div class="panel" style="display:flex; flex-direction:column; height: 100%;">
+                            <div class="panel-body" style="padding: 12px; display:flex; flex-direction:column; gap:12px;">
+                                <div class="deploy-card-body deploy-config-body" style="background:var(--bg-tertiary); border:1px solid var(--border-primary); border-radius:var(--radius-md); padding:10px;">
+                                    <h3 style="font-size:12px; font-weight:600; text-transform:uppercase; color:var(--text-tertiary); margin:0 0 8px 0; letter-spacing:0.5px;">Test Inference Data</h3>
+                                    <div class="config-row" style="flex-direction:column; align-items:flex-start;">
+                                        <label style="margin-bottom:4px;">Device IP</label>
+                                        <input type="text" id="inferenceDeviceIp" class="form-input form-input-sm" value="192.168.100.2" placeholder="192.168.100.2" style="width:100%;">
+                                    </div>
+                                    <button class="btn-primary btn-sm btn-submit" id="btnConnectInference" style="margin-top:8px;">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                        <span data-i18n="inference_connect">Connect Data</span>
+                                    </button>
+                                    
+                                    <div style="margin-top:12px; font-size:11px; font-family:var(--font-mono); color:var(--text-secondary); display:flex; justify-content:space-between; border-top:1px dashed var(--border-primary); padding-top:8px;">
+                                        <div style="display:flex; align-items:center; gap:4px;">Stream FPS: <span id="lblVideoFps" style="color:var(--text-primary); font-weight:600;">--</span></div>
+                                        <div style="display:flex; align-items:center; gap:4px;">YOLO FPS: <span id="lblYoloFps" style="color:#22c55e; font-weight:600;">--</span></div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
+
+                        <!-- Video Stream Monitor (Right Column) -->
+                        <div class="panel" style="display:flex; flex-direction:column; align-items:center; flex:1; height: 100%;">
+                            <div class="panel-body" style="width:100%; height:100%; display:flex; justify-content:center; align-items:center; padding:12px; overflow:hidden;">
+                                <div id="videoContainer" style="position:relative; width:100%; height:100%; max-width:100%; border-radius:var(--radius-lg); overflow:hidden; border:1px solid var(--border-primary); box-shadow: 0 4px 12px rgba(0,0,0,0.15); display:flex; justify-content:center; align-items:center;">
+                                    <img id="mjpegStream" src="" alt="Stream Offline" style="width:100%; height:100%; object-fit:contain; display:none; background:var(--bg-video, #000);">
+                                    <canvas id="yoloOverlay" style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none;"></canvas>
+                                    <div id="noStreamOverlay" style="position:absolute; top:0; left:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; color: var(--text-tertiary); flex-direction:column; background: var(--bg-video, #000);">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48" style="margin-bottom:10px;"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></svg>
+                                        <span data-i18n="inference_no_stream">No Active Stream</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Row 2: Serial Monitor -->
+                    <div class="content-grid" style="flex: 1; min-height: 0;">
+                        
+                        <!-- Serial Setup (Left Column) -->
+                        <div class="panel" style="display:flex; flex-direction:column; height: 100%;">
+                            <div class="panel-body" style="padding: 12px; display:flex; flex-direction:column; gap:12px;">
+                                <div class="deploy-card-body deploy-config-body" style="background:var(--bg-tertiary); border:1px solid var(--border-primary); border-radius:var(--radius-md); padding:10px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                                        <h3 style="font-size:12px; font-weight:600; text-transform:uppercase; color:var(--text-tertiary); margin:0; letter-spacing:0.5px;">Serial Connection</h3>
+                                        <button class="btn-icon-sm" id="btnRefreshPorts" title="Refresh COM Ports">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+                                        </button>
+                                    </div>
+                                    <div class="config-row">
+                                        <label>Port</label>
+                                        <div class="config-inputs">
+                                            <select id="serialPort" class="form-select form-input-sm" style="width: 100%;"></select>
+                                        </div>
+                                    </div>
+                                    <div class="config-row">
+                                        <label>Baud</label>
+                                        <div class="config-inputs">
+                                            <select id="serialBaud" class="form-select form-input-sm" style="width: 100%;">
+                                                <option value="9600">9600</option>
+                                                <option value="115200" selected>115200</option>
+                                                <option value="1500000">1500000</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="config-row">
+                                        <label>Mode</label>
+                                        <div class="config-inputs">
+                                            <select id="serialViewMode" class="form-select form-input-sm" style="width: 100%;">
+                                                <option value="raw">Raw Data</option>
+                                                <option value="viz">Visualization</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <button class="btn-primary btn-sm btn-submit" id="btnConnectSerial" style="margin-top:8px;">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                                        <span id="serialBtnText">Open Serial Port</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Serial Terminal (Right Column) -->
+                        <div class="panel deploy-log-card" style="flex:1; display:flex; flex-direction:column; overflow:hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.15); height: 100%;">
+                            <div class="deploy-card-header" style="justify-content: space-between;">
+                                <div style="display:flex; align-items:center;">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                                    <span style="margin-left:8px; font-weight:600;">Terminal</span>
+                                </div>
+                                <div style="display:flex; align-items:center; gap:8px;">
+                                    <button class="btn-icon-sm" id="clearSerialLogs" title="Clear console">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="serialConsole" style="flex: 1 1 auto; height: 100%; min-height: 0; padding:12px; font-family:var(--font-mono); font-size:12px; line-height:1.5; white-space:pre-wrap; overflow-y:auto; background:var(--bg-video, #0f172a); color:#10b981; border:none; margin:0; border-top: 1px solid var(--border-primary);"></div>
+                            <canvas id="serialVizCanvas" style="display:none; flex: 1 1 auto; height: 100%; min-height: 0; width:100%; background:#282828;"></canvas>
+                            <!-- Input Box -->
+                            <div class="input-with-action" style="border-top: 1px solid var(--border-primary); padding:8px; background:var(--bg-tertiary);">
+                                <input type="text" id="serialInput" class="form-input form-input-sm" placeholder="Send AT command..." disabled style="font-family:var(--font-mono);">
+                                <button class="btn-secondary btn-sm" id="btnSendSerial" disabled style="width:auto;">Send</button>
+                            </div>
+                        </div>
+
                     </div>
                 </div>
 

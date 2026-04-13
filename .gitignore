@@ -27,3 +27,9 @@ desktop.ini
 
 # Gemini
 .gemini/
+
+# Temporary files
+*.txt
+!requirements.txt
+tmp_*.py
+test_*.py

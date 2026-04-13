@@ -92,11 +92,24 @@ const translations = {
         // ======== APP PAGE ========
         app_title: 'Model Preparation',
         app_subtitle: 'Convert YOLO models for LicheeRV Nano deployment',
-        app_nav_dashboard: 'Dashboard',
+        app_nav_guide: 'User Guide',
         app_nav_model_prep: 'Model Preparation',
         app_nav_deploy: 'Deployment',
         app_nav_config: 'Configuration',
         app_nav_monitor: 'Monitoring',
+        inference_serial_title: 'Serial Monitor',
+        inference_title: 'Test Inference',
+        inference_connect: 'Connect Data',
+        inference_no_stream: 'No Active Stream',
+        
+        // Guide
+        guide_title: 'Quick Start Guide',
+        guide_step_1: '1. Model Preparation',
+        guide_step_1_desc: 'Navigate to "Model Preparation" to upload a raw YOLO `.pt` model or pick a preset. Click "Start Conversion" to automate the ONNX → MLIR → CVI process. Ensure Docker is running in background.',
+        guide_step_2: '2. Deployment',
+        guide_step_2_desc: 'Once the model becomes a `.cvimodel`, go to "Deployment". Enter your LicheeRV Nano IP address and click "Deploy". The system will automatically configure, transfer the model, and reboot the CSI stream on the edge device.',
+        guide_step_3: '3. Test Inference',
+        guide_step_3_desc: 'Go to "Test Inference" to test your deployed model in real-time. Use the Video stream to verify visual detection, and open the Serial Monitor to capture bounding box metrics via UART if configured.',
 
         // Model Prep Form
         form_title: 'New Conversion Job',
@@ -225,11 +238,24 @@ const translations = {
         // ======== APP PAGE ========
         app_title: 'Chuẩn bị Model',
         app_subtitle: 'Chuyển đổi model YOLO để triển khai trên LicheeRV Nano',
-        app_nav_dashboard: 'Bảng điều khiển',
+        app_nav_guide: 'Hướng dẫn sử dụng',
         app_nav_model_prep: 'Chuẩn bị Model',
         app_nav_deploy: 'Triển khai',
         app_nav_config: 'Cấu hình',
         app_nav_monitor: 'Giám sát',
+        inference_serial_title: 'Màn hình Serial',
+        inference_title: 'Kiểm thử Suy luận',
+        inference_connect: 'Kết nối Truyền dữ liệu',
+        inference_no_stream: 'Không tìm thấy Stream',
+        
+        // Guide
+        guide_title: 'Hướng dẫn Sử dụng Nhanh',
+        guide_step_1: '1. Chuẩn bị Mô hình (Model Prep)',
+        guide_step_1_desc: 'Sang mục "Chuyển đổi Model" để upload model YOLO `.pt` hoặc chọn preset. Nhấn "Start" để tự động hóa quy trình ONNX → MLIR → CVI. Đảm bảo cấu hình Docker chạy ngầm.',
+        guide_step_2: '2. Triển khai (Deployment)',
+        guide_step_2_desc: 'Khi model đã chuyển thành `.cvimodel`, sang mục "Triển khai". Nhập IP LicheeRV Nano và nhấn "Deploy". Hệ thống sẽ cấu hình và đổ model trực tiếp vào thiết bị.',
+        guide_step_3: '3. Kiểm thử (Test Inference)',
+        guide_step_3_desc: 'Mở trang "Kiểm thử Suy luận" để test luồng chạy thực tế. Dùng Video stream xem bbox trực quan, hoặc mở Serial Monitor kiểm tra tín hiệu gốc từ cổng COM.',
 
         // Model Prep Form
         form_title: 'Job chuyển đổi mới',

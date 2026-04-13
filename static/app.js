@@ -60,6 +60,111 @@ document.addEventListener('DOMContentLoaded', () => {
         socket.on('job_log', (data) => {
             appendLog(data);
         });
+
+        // Inference meta listener
+        let yoloFrames = 0;
+        let lastYoloMetaTime = Date.now();
+        const lblYoloFps = document.getElementById('lblYoloFps');
+        const lblVideoFps = document.getElementById('lblVideoFps');
+
+        socket.on('inference_meta', (data) => {
+            drawInferenceOverlay(data);
+            
+            yoloFrames++;
+            const now = Date.now();
+            if (now - lastYoloMetaTime >= 1000) {
+                const fps = yoloFrames / ((now - lastYoloMetaTime) / 1000);
+                if (lblYoloFps) lblYoloFps.textContent = fps.toFixed(1);
+                yoloFrames = 0;
+                lastYoloMetaTime = now;
+            }
+        });
+        
+        socket.on('video_meta', (data) => {
+            if (lblVideoFps && data.fps !== undefined) {
+                lblVideoFps.textContent = data.fps.toFixed(1);
+            }
+        });
+
+        // Deploy log listener — shows in LOGS panel
+        socket.on('deploy_log', (entry) => {
+            const logConsole = document.getElementById('deployLogConsole');
+            if (!logConsole) return;
+
+            // Remove empty placeholder
+            const emptyEl = logConsole.querySelector('.log-empty');
+            if (emptyEl) emptyEl.remove();
+
+            const div = document.createElement('div');
+            div.className = `log-entry ${entry.level || 'info'}`;
+            const time = new Date(entry.time * 1000);
+            const timeStr = time.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            div.innerHTML = `<span class="log-time">${timeStr}</span><span class="log-message">${entry.message.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>`;
+            logConsole.appendChild(div);
+            logConsole.scrollTop = logConsole.scrollHeight;
+        });
+
+        // Deploy steps listener — renders pipeline in DEPLOYMENT STATUS panel
+        socket.on('deploy_steps', (data) => {
+            const statusPanel = document.getElementById('deployEmpty');
+            if (!statusPanel) return;
+
+            const steps = data.steps || [];
+            const icons = {
+                pending: '○',
+                running: '◉',
+                completed: '✓',
+                failed: '✗',
+                skipped: '—',
+            };
+
+            let html = '<div class="deploy-step-list">';
+            steps.forEach((step, i) => {
+                html += `
+                    <div class="deploy-step-item ${step.status}">
+                        <div class="deploy-step-indicator ${step.status}">${icons[step.status] || '○'}</div>
+                        <div class="deploy-step-info">
+                            <div class="deploy-step-name">${step.name}</div>
+                            ${step.detail ? `<div class="deploy-step-detail">${step.detail}</div>` : ''}
+                        </div>
+                    </div>`;
+            });
+            html += '</div>';
+            statusPanel.innerHTML = html;
+        });
+
+        // Deploy completion listener
+        socket.on('deploy_complete', (data) => {
+            if (btnDeploy) btnDeploy.disabled = false;
+        });
+
+        // Serial data listeners
+        socket.on('serial_data', (data) => {
+            appendSerialLog(data.text);
+            if (typeof processSerialVizData === 'function') {
+                processSerialVizData(data.text);
+            }
+        });
+        socket.on('serial_error', (data) => {
+            appendSerialLog(`[ERROR] ${data.error}\n`, true);
+            // Optionally auto-disconnect the UI
+            if (serialActive) {
+                disconnectSerialUI();
+            }
+        });
+    }
+
+    function appendSerialLog(text, isError=false) {
+        const consoleEl = document.getElementById('serialConsole');
+        if (!consoleEl) return;
+        
+        const span = document.createElement('span');
+        span.textContent = text;
+        if (isError) span.style.color = '#ef4444';
+        
+        consoleEl.appendChild(span);
+        // Auto-scroll to bottom
+        consoleEl.scrollTop = consoleEl.scrollHeight;
     }
 
     function updateConnectionStatus(online) {
@@ -529,13 +634,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ---- Page Navigation ----
     const pageTitles = {
-        'dashboard': { en: 'Dashboard', vi: 'Bảng điều khiển' },
+        'guide': { en: 'User Guide', vi: 'Hướng dẫn sử dụng' },
         'model-prep': { en: 'Model Preparation', vi: 'Chuẩn bị Model' },
         'deploy': { en: 'Deployment', vi: 'Triển khai' },
         'inference': { en: 'Test Inference', vi: 'Kiểm thử Inference' },
     };
     const pageSubtitles = {
-        'dashboard': { en: 'Overview of your workspace', vi: 'Tổng quan không gian làm việc' },
+        'guide': { en: 'Quick Start Guide to Edge AI pipelines', vi: 'Hướng dẫn nhanh quy trình Edge AI' },
         'model-prep': { en: 'Convert YOLO models for LicheeRV Nano deployment', vi: 'Chuyển đổi model YOLO cho LicheeRV Nano' },
         'deploy': { en: 'Deploy models to LicheeRV Nano device', vi: 'Triển khai model lên thiết bị LicheeRV Nano' },
         'inference': { en: 'Run inference tests on deployed models', vi: 'Chạy kiểm thử inference trên model đã triển khai' },
@@ -656,26 +761,122 @@ document.addEventListener('DOMContentLoaded', () => {
         btnDeploy.disabled = !hasModel;
     }
 
-    // Ping button (frontend only — backend to be added later)
+    // Ping button — calls real backend
     if (btnPingDevice) {
-        btnPingDevice.addEventListener('click', () => {
-            const ip = document.getElementById('deployDeviceIp')?.value;
+        btnPingDevice.addEventListener('click', async () => {
+            const ip = document.getElementById('deployDeviceIp')?.value?.trim();
             if (!ip) return;
+
+            btnPingDevice.disabled = true;
             btnPingDevice.className = 'btn-ping';
             btnPingDevice.querySelector('span').textContent = 'Pinging...';
-            // TODO: call backend /api/device/ping endpoint
-            setTimeout(() => {
-                btnPingDevice.querySelector('span').textContent = 'Ping';
-                // Placeholder — will be connected to backend
-            }, 1500);
+
+            const deviceStatusEl = document.getElementById('deviceStatus');
+
+            try {
+                const res = await fetch('/api/device/ping', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip })
+                });
+                const data = await res.json();
+
+                if (data.reachable) {
+                    btnPingDevice.className = 'btn-ping success';
+                    btnPingDevice.querySelector('span').textContent = `${data.avg_ms}ms`;
+                    if (deviceStatusEl) {
+                        deviceStatusEl.innerHTML = `
+                            <div class="status-indicator online">
+                                <span class="status-dot"></span>
+                                <span>Online — ${data.avg_ms}ms</span>
+                            </div>
+                        `;
+                    }
+                } else {
+                    btnPingDevice.className = 'btn-ping fail';
+                    btnPingDevice.querySelector('span').textContent = 'Offline';
+                    if (deviceStatusEl) {
+                        deviceStatusEl.innerHTML = `
+                            <div class="status-indicator offline">
+                                <span class="status-dot"></span>
+                                <span>Unreachable</span>
+                            </div>
+                        `;
+                    }
+                }
+            } catch (e) {
+                btnPingDevice.className = 'btn-ping fail';
+                btnPingDevice.querySelector('span').textContent = 'Error';
+            } finally {
+                btnPingDevice.disabled = false;
+                // Reset button text after 3 seconds
+                setTimeout(() => {
+                    btnPingDevice.querySelector('span').textContent = 'Ping';
+                    btnPingDevice.className = 'btn-ping';
+                }, 3000);
+            }
         });
     }
 
-    // Deploy button (frontend only — backend to be added later)
+    // Deploy button
     if (btnDeploy) {
-        btnDeploy.addEventListener('click', () => {
-            const lang = localStorage.getItem('lailab_lang') || 'en';
-            alert(lang === 'vi' ? 'Backend triển khai sẽ được thêm sau.' : 'Deployment backend will be added later.');
+        btnDeploy.addEventListener('click', async () => {
+            const ip = document.getElementById('deployDeviceIp')?.value.trim();
+            if (!ip) return;
+            
+            const streamWidth = document.getElementById('streamWidth')?.value || 640;
+            const streamHeight = document.getElementById('streamHeight')?.value || 480;
+            const yoloW = document.getElementById('yoloInputW')?.value || 320;
+            const yoloH = document.getElementById('yoloInputH')?.value || 320;
+            const camWidth = document.getElementById('camWidth')?.value || 640;
+            const camHeight = document.getElementById('camHeight')?.value || 480;
+            const confThresh = document.getElementById('confThresh')?.value || 0.5;
+            const nmsThresh = document.getElementById('nmsThresh')?.value || 0.5;
+            const noYolo = document.getElementById('noYolo')?.checked || false;
+            const jpegQuality = document.getElementById('jpegQuality')?.value || 70;
+            const uartDev = document.getElementById('uartDev')?.value || '/dev/ttyS0';
+            const baudRate = document.getElementById('baudRate')?.value || 115200;
+            
+            // Get password from SSH password field (shared with deploy)
+            const password = document.getElementById('sshPassword')?.value || '';
+            const user = document.getElementById('sshUser')?.value?.trim() || 'root';
+            
+            let modelFilename = currentDeployModel ? currentDeployModel.filename : null;
+            if (deployUploadedFile) {
+                modelFilename = deployUploadedFile.name;
+            }
+
+            if (!modelFilename) return;
+
+            btnDeploy.disabled = true;
+            const logConsole = document.getElementById('deployLogConsole');
+            if (logConsole) logConsole.innerHTML = '';
+
+            // Reset status panel — steps will be populated by deploy_steps WS event
+            const statusPanel = document.getElementById('deployEmpty');
+            if (statusPanel) statusPanel.innerHTML = '<span class="deploy-status-text">⏳ Starting deployment...</span>';
+
+            try {
+                const res = await fetch('/api/deploy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        ip, model_filename: modelFilename, streamWidth, streamHeight, yoloW, yoloH, 
+                        password, user,
+                        camWidth, camHeight, confThresh, nmsThresh, noYolo, jpegQuality, uartDev, baudRate
+                    })
+                });
+                
+                if (!res.ok) {
+                    const data = await res.json();
+                    if (statusPanel) statusPanel.innerHTML = `<span class="deploy-status-text" style="color:#ef4444">❌ ${data.error || 'Deploy failed'}</span>`;
+                    btnDeploy.disabled = false;
+                }
+            } catch (e) {
+                console.error('Deploy error', e);
+                if (statusPanel) statusPanel.innerHTML = '<span class="deploy-status-text" style="color:#ef4444">❌ Network error</span>';
+                btnDeploy.disabled = false;
+            }
         });
     }
 
@@ -699,4 +900,537 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Refresh Docker status every 30 seconds
     setInterval(checkDockerStatus, 30000);
+
+    // ---- Test Inference Logic ----
+    const btnConnectInference = document.getElementById('btnConnectInference');
+    const inferenceDeviceIp = document.getElementById('inferenceDeviceIp');
+    const mjpegStream = document.getElementById('mjpegStream');
+    const noStreamOverlay = document.getElementById('noStreamOverlay');
+    const yoloOverlay = document.getElementById('yoloOverlay');
+    let inferenceActive = false;
+    let inferenceMetaTimer = null;
+
+    if (btnConnectInference) {
+        btnConnectInference.addEventListener('click', () => {
+            const ip = inferenceDeviceIp.value.trim();
+            if (!ip) return;
+            
+            if (!inferenceActive) {
+                // Connect
+                inferenceActive = true;
+                btnConnectInference.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><rect x="6" y="6" width="12" height="12"/></svg><span>Disconnect</span>`;
+                btnConnectInference.classList.replace('btn-primary', 'btn-secondary');
+                
+                mjpegStream.src = `/api/stream_proxy?ip=${ip}&t=` + Date.now();
+                mjpegStream.style.display = 'block';
+                noStreamOverlay.style.display = 'none';
+                
+                // Tell backend to start listening for UDP metrics from this IP
+                socket.emit('start_inference', { ip: ip });
+            } else {
+                // Disconnect
+                inferenceActive = false;
+                btnConnectInference.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>Connect Data</span>`;
+                btnConnectInference.classList.replace('btn-secondary', 'btn-primary');
+                
+                mjpegStream.src = '';
+                mjpegStream.style.display = 'none';
+                noStreamOverlay.style.display = 'flex';
+                
+                if (yoloOverlay) {
+                    const ctx = yoloOverlay.getContext('2d');
+                    ctx.clearRect(0, 0, yoloOverlay.width, yoloOverlay.height);
+                }
+                
+                const yoloFpsEl = document.getElementById('lblYoloFps');
+                const videoFpsEl = document.getElementById('lblVideoFps');
+                if (yoloFpsEl) yoloFpsEl.textContent = '--';
+                if (videoFpsEl) videoFpsEl.textContent = '--';
+                
+                socket.emit('stop_inference', {});
+            }
+        });
+    }
+
+    function drawInferenceOverlay(data) {
+        if (!inferenceActive || !yoloOverlay) return;
+        const ctx = yoloOverlay.getContext('2d');
+        
+        // Ensure yoloOverlay internal width/height matches its CSS rendering size
+        if (yoloOverlay.width !== yoloOverlay.clientWidth || yoloOverlay.height !== yoloOverlay.clientHeight) {
+            yoloOverlay.width = yoloOverlay.clientWidth;
+            yoloOverlay.height = yoloOverlay.clientHeight;
+        }
+        
+        ctx.clearRect(0, 0, yoloOverlay.width, yoloOverlay.height);
+        
+        if (!data || !data.objs) return;
+        
+        // Extract resolutions from metadata (with fallbacks)
+        const yw = data.yw || 320;
+        const yh = data.yh || 320;
+        const sw = data.sw || 640;
+        const sh = data.sh || 480;
+
+        // 1. YOLO -> Stream scaling (VPSS ASPECT_RATIO_AUTO)
+        const yoloScale = Math.min(yw / sw, yh / sh);
+        const yoloNewW = sw * yoloScale;
+        const yoloNewH = sh * yoloScale;
+        const yoloPadX = (yw - yoloNewW) / 2;
+        const yoloPadY = (yh - yoloNewH) / 2;
+
+        // 2. Stream -> Canvas scaling (CSS object-fit: contain)
+        const canvasW = yoloOverlay.width;
+        const canvasH = yoloOverlay.height;
+        const imgScale = Math.min(canvasW / sw, canvasH / sh);
+        const imgW = sw * imgScale;
+        const imgH = sh * imgScale;
+        const imgPadX = (canvasW - imgW) / 2;
+        const imgPadY = (canvasH - imgH) / 2;
+
+        data.objs.forEach(obj => {
+            const classId = obj.c;
+
+            // Map from YOLO to Stream
+            const streamX = (obj.x - yoloPadX) / yoloScale;
+            const streamY = (obj.y - yoloPadY) / yoloScale;
+            const streamW = obj.w / yoloScale;
+            const streamH = obj.h / yoloScale;
+
+            // Clamp to stream bounds (safeguard)
+            const clamp = (val, min, max) => Math.max(min, Math.min(max, val));
+            const x1s = clamp(streamX, 0, sw - 1);
+            const y1s = clamp(streamY, 0, sh - 1);
+            const x2s = clamp(streamX + streamW, 0, sw - 1);
+            const y2s = clamp(streamY + streamH, 0, sh - 1);
+            
+            if (x2s <= x1s || y2s <= y1s) return; // invalid box
+
+            // Map from Stream to Canvas
+            const x = imgPadX + x1s * imgScale;
+            const y = imgPadY + y1s * imgScale;
+            const w = (x2s - x1s) * imgScale;
+            const h = (y2s - y1s) * imgScale;
+
+            const score = Math.round(obj.s * 100);
+
+            // Draw Box
+            ctx.strokeStyle = '#22c55e'; // Green box
+            ctx.lineWidth = 2;
+            ctx.strokeRect(x, y, w, h);
+
+            // Draw Background for text
+            ctx.fillStyle = '#22c55e';
+            const labelW = w > 100 ? w : 100;
+            ctx.fillRect(x, y - 24, labelW, 24);
+
+            // Draw Text
+            ctx.fillStyle = '#fff';
+            ctx.font = '14px Inter, sans-serif';
+            ctx.fillText(`Class ${classId} : ${score}%`, x + 4, y - 8);
+        });
+    }
+    
+    // ---- Serial Monitor Logic ----
+    const serialPortSel = document.getElementById('serialPort');
+    const serialBaudSel = document.getElementById('serialBaud');
+    const btnRefreshPorts = document.getElementById('btnRefreshPorts');
+    const btnConnectSerial = document.getElementById('btnConnectSerial');
+    const serialBtnText = document.getElementById('serialBtnText');
+    const serialInput = document.getElementById('serialInput');
+    const btnSendSerial = document.getElementById('btnSendSerial');
+    const clearSerialLogs = document.getElementById('clearSerialLogs');
+    const serialConsole = document.getElementById('serialConsole');
+    const serialVizCanvas = document.getElementById('serialVizCanvas');
+    const serialViewMode = document.getElementById('serialViewMode');
+
+    let serialActive = false;
+    let serialVizIsActive = false;
+
+    // Viz Data
+    let serialBuffer = '';
+    let serialYoloObjects = [];
+    let serialYoloImgW = 640;
+    let serialYoloImgH = 480;
+
+    const classColors = [
+        '#ef4444', '#22c55e', '#3b82f6', '#eab308', '#d946ef', '#06b6d4', '#f97316'
+    ];
+
+    window.processSerialVizData = function(text) {
+        if (!serialVizIsActive || !serialVizCanvas) return;
+        
+        serialBuffer += text;
+        const lines = serialBuffer.split('\n');
+        serialBuffer = lines.pop(); // Keep the last incomplete line
+        
+        for (let line of lines) {
+            line = line.trim();
+            if (line.startsWith('$YOLO,')) {
+                const starIdx = line.indexOf('*');
+                if (starIdx > 0) {
+                    const dataPart = line.substring(6, starIdx);
+                    const parts = dataPart.split(',').map(Number);
+                    if (parts.length >= 4) {
+                        const count = parts[1];
+                        serialYoloImgW = parts[2];
+                        serialYoloImgH = parts[3];
+                        
+                        const newObjs = [];
+                        let idx = 4;
+                        for (let i = 0; i < count; i++) {
+                            if (idx + 5 <= parts.length) {
+                                newObjs.push({
+                                    c: parts[idx++],
+                                    x1: parts[idx++],
+                                    y1: parts[idx++],
+                                    x2: parts[idx++],
+                                    y2: parts[idx++],
+                                    s: parts[idx++]
+                                });
+                            }
+                        }
+                        serialYoloObjects = newObjs;
+                    }
+                }
+            }
+        }
+    };
+
+    function renderSerialViz() {
+        if (!serialVizIsActive || !serialVizCanvas) return;
+        
+        const dpr = window.devicePixelRatio || 1;
+        const rect = serialVizCanvas.getBoundingClientRect();
+        const displayWidth = Math.floor(rect.width);
+        const displayHeight = Math.floor(rect.height);
+        
+        if (serialVizCanvas.width !== displayWidth * dpr || serialVizCanvas.height !== displayHeight * dpr) {
+            serialVizCanvas.width = displayWidth * dpr;
+            serialVizCanvas.height = displayHeight * dpr;
+            // Only force width/height styling if it isn't already taking full space
+            // serialVizCanvas.style.width = displayWidth + 'px';
+            // serialVizCanvas.style.height = displayHeight + 'px';
+        }
+        
+        const ctx = serialVizCanvas.getContext('2d');
+        ctx.resetTransform();
+        ctx.scale(dpr, dpr);
+        
+        const W = displayWidth;
+        const H = displayHeight;
+        
+        ctx.fillStyle = '#282828';
+        ctx.fillRect(0, 0, W, H);
+        
+        const scaleFactor = Math.min(W / serialYoloImgW, H / serialYoloImgH);
+        const drawW = serialYoloImgW * scaleFactor;
+        const drawH = serialYoloImgH * scaleFactor;
+        const offsetX = (W - drawW) / 2;
+        const offsetY = (H - drawH) / 2;
+        
+        ctx.fillStyle = '#141414';
+        ctx.strokeStyle = '#646464';
+        ctx.lineWidth = 1;
+        ctx.fillRect(offsetX, offsetY, drawW, drawH);
+        ctx.strokeRect(offsetX, offsetY, drawW, drawH);
+        
+        serialYoloObjects.forEach(obj => {
+            const px1 = offsetX + (obj.x1 / serialYoloImgW) * drawW;
+            const py1 = offsetY + (obj.y1 / serialYoloImgH) * drawH;
+            const px2 = offsetX + (obj.x2 / serialYoloImgW) * drawW;
+            const py2 = offsetY + (obj.y2 / serialYoloImgH) * drawH;
+            const boxW = px2 - px1;
+            const boxH = py2 - py1;
+            
+            const color = classColors[obj.c % classColors.length];
+            
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 3;
+            ctx.strokeRect(px1, py1, boxW, boxH);
+            
+            ctx.fillStyle = color;
+            const labelW = Math.max(120, boxW);
+            ctx.fillRect(px1, py1 - 22, labelW, 22);
+            
+            ctx.fillStyle = '#ffffff';
+            ctx.font = '600 14px Inter, sans-serif';
+            ctx.fillText(`Class ${obj.c} (${obj.s}%)`, px1 + 4, py1 - 6);
+        });
+        
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '600 16px Inter, sans-serif';
+        // Draw slightly inset
+        ctx.fillText(`Objects: ${serialYoloObjects.length}`, 16, 28);
+        ctx.fillText(`Resolution: ${serialYoloImgW} × ${serialYoloImgH}`, 16, 52);
+        
+        requestAnimationFrame(renderSerialViz);
+    }
+
+    if (serialViewMode) {
+        serialViewMode.addEventListener('change', () => {
+            if (serialViewMode.value === 'viz') {
+                serialConsole.style.display = 'none';
+                serialVizCanvas.style.display = 'block';
+                serialVizIsActive = true;
+                requestAnimationFrame(renderSerialViz);
+            } else {
+                serialConsole.style.display = 'block';
+                serialVizCanvas.style.display = 'none';
+                serialVizIsActive = false;
+            }
+        });
+    }
+
+    async function loadSerialPorts() {
+        if (!serialPortSel) return;
+        try {
+            const res = await fetch('/api/serial/ports');
+            const data = await res.json();
+            serialPortSel.innerHTML = '';
+            
+            if (data.length === 0) {
+                const opt = document.createElement('option');
+                opt.value = "";
+                opt.textContent = "No ports found";
+                opt.disabled = true;
+                opt.selected = true;
+                serialPortSel.appendChild(opt);
+                return;
+            }
+
+            data.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.port;
+                opt.textContent = `${p.port} (${p.desc})`;
+                serialPortSel.appendChild(opt);
+            });
+        } catch (e) {
+            console.error("Failed to load serial ports:", e);
+        }
+    }
+
+    if (btnRefreshPorts) {
+        btnRefreshPorts.addEventListener('click', loadSerialPorts);
+        // Load initially
+        loadSerialPorts();
+    }
+
+    function disconnectSerialUI() {
+        serialActive = false;
+        serialBtnText.textContent = 'Open Serial Port';
+        btnConnectSerial.classList.replace('btn-secondary', 'btn-primary');
+        serialInput.disabled = true;
+        btnSendSerial.disabled = true;
+        serialPortSel.disabled = false;
+        serialBaudSel.disabled = false;
+        appendSerialLog('\n[DISCONNECTED]\n', true);
+    }
+
+    if (btnConnectSerial) {
+        btnConnectSerial.addEventListener('click', async () => {
+            if (!serialActive) {
+                const port = serialPortSel.value;
+                const baudrate = serialBaudSel.value;
+                if (!port) return;
+
+                btnConnectSerial.disabled = true;
+                
+                try {
+                    const res = await fetch('/api/serial/connect', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ port, baudrate })
+                    });
+                    const data = await res.json();
+                    
+                    if (res.ok) {
+                        serialActive = true;
+                        serialBtnText.textContent = 'Close Port';
+                        btnConnectSerial.classList.replace('btn-primary', 'btn-secondary');
+                        serialInput.disabled = false;
+                        btnSendSerial.disabled = false;
+                        serialPortSel.disabled = true;
+                        serialBaudSel.disabled = true;
+                        serialConsole.innerHTML = '';
+                        appendSerialLog(`[CONNECTED] ${port} @ ${baudrate}\n`);
+                    } else {
+                        appendSerialLog(`[CONNECTION FAILED] ${data.error || 'Unknown error'}\n`, true);
+                    }
+                } catch (e) {
+                    appendSerialLog(`[NETWORK ERROR] Could not connect to backend.\n`, true);
+                } finally {
+                    btnConnectSerial.disabled = false;
+                }
+            } else {
+                try {
+                    btnConnectSerial.disabled = true;
+                    await fetch('/api/serial/disconnect', { method: 'POST' });
+                } catch (e) {
+                    console.error("Disconnect error:", e);
+                } finally {
+                    btnConnectSerial.disabled = false;
+                    disconnectSerialUI();
+                }
+            }
+        });
+    }
+
+    async function sendSerialCommand() {
+        if (!serialActive || !serialInput.value.trim()) return;
+        const text = serialInput.value;
+        try {
+            const res = await fetch('/api/serial/write', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+            if (res.ok) {
+                appendSerialLog(`> ${text}\n`);
+                serialInput.value = '';
+            }
+        } catch (e) {
+            console.error("Failed to write to serial", e);
+        }
+    }
+
+    if (btnSendSerial) {
+        btnSendSerial.addEventListener('click', sendSerialCommand);
+    }
+
+    if (serialInput) {
+        serialInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                sendSerialCommand();
+            }
+        });
+    }
+
+    if (clearSerialLogs) {
+        clearSerialLogs.addEventListener('click', () => {
+            if (serialConsole) serialConsole.innerHTML = '';
+        });
+    }
+
+    // ---- SSH Terminal Logic ----
+    const btnSshConnect = document.getElementById('btnSshConnect');
+    const sshBtnText = document.getElementById('sshBtnText');
+    const sshConsole = document.getElementById('sshConsole');
+    const sshInput = document.getElementById('sshInput');
+    const btnSshSend = document.getElementById('btnSshSend');
+    const clearSshLogs = document.getElementById('clearSshLogs');
+    let sshActive = false;
+
+    function appendSshLog(text, cssClass = '') {
+        if (!sshConsole) return;
+        const span = document.createElement('span');
+        if (cssClass) span.className = cssClass;
+        span.textContent = text;
+        sshConsole.appendChild(span);
+        sshConsole.scrollTop = sshConsole.scrollHeight;
+    }
+
+    if (socket) {
+        socket.on('ssh_data', (data) => {
+            if (!sshConsole) return;
+            const span = document.createElement('span');
+            if (data.error) span.className = 'ssh-error';
+            // Strip common ANSI escape codes for cleaner display
+            span.textContent = data.text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+            sshConsole.appendChild(span);
+            sshConsole.scrollTop = sshConsole.scrollHeight;
+        });
+    }
+
+    if (btnSshConnect) {
+        btnSshConnect.addEventListener('click', async () => {
+            const host = document.getElementById('deployDeviceIp')?.value.trim();
+            const user = document.getElementById('sshUser')?.value.trim() || 'root';
+            const password = document.getElementById('sshPassword')?.value || '';
+
+            if (!host) return;
+
+            if (!sshActive) {
+                // Connect
+                btnSshConnect.disabled = true;
+                sshConsole.innerHTML = '';
+                appendSshLog(`Connecting to ${user}@${host}...\n`, 'ssh-system');
+
+                try {
+                    const res = await fetch('/api/ssh/connect', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ host, user, password })
+                    });
+                    const data = await res.json();
+
+                    if (res.ok) {
+                        sshActive = true;
+                        sshBtnText.textContent = 'Disconnect';
+                        btnSshConnect.classList.replace('btn-primary', 'btn-secondary');
+                        sshInput.disabled = false;
+                        btnSshSend.disabled = false;
+                        appendSshLog(`Connected to ${user}@${host}\n`, 'ssh-system');
+                    } else {
+                        appendSshLog(`Connection failed: ${data.error}\n`, 'ssh-error');
+                    }
+                } catch (e) {
+                    appendSshLog(`Network error: ${e.message}\n`, 'ssh-error');
+                } finally {
+                    btnSshConnect.disabled = false;
+                }
+            } else {
+                // Disconnect
+                btnSshConnect.disabled = true;
+                try {
+                    await fetch('/api/ssh/disconnect', { method: 'POST' });
+                } catch (e) {}
+                sshActive = false;
+                sshBtnText.textContent = 'Connect';
+                btnSshConnect.classList.replace('btn-secondary', 'btn-primary');
+                sshInput.disabled = true;
+                btnSshSend.disabled = true;
+                appendSshLog('\n[DISCONNECTED]\n', 'ssh-system');
+                btnSshConnect.disabled = false;
+            }
+        });
+    }
+
+    async function sendSshCommand() {
+        if (!sshActive || !sshInput || !sshInput.value.trim()) return;
+        const text = sshInput.value;
+        try {
+            const res = await fetch('/api/ssh/write', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+            if (res.ok) {
+                sshInput.value = '';
+            }
+        } catch (e) {
+            appendSshLog(`Send failed: ${e.message}\n`, 'ssh-error');
+        }
+    }
+
+    if (btnSshSend) {
+        btnSshSend.addEventListener('click', sendSshCommand);
+    }
+
+    if (sshInput) {
+        sshInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                sendSshCommand();
+            }
+        });
+    }
+
+    if (clearSshLogs) {
+        clearSshLogs.addEventListener('click', () => {
+            if (sshConsole) sshConsole.innerHTML = '';
+        });
+    }
+
 });
