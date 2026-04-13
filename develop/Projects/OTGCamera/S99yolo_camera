@@ -1,0 +1,57 @@
+#!/bin/sh
+#
+# Start YOLO Camera automatically with delay and logging
+#
+
+LOG_FILE="/tmp/yolo_boot.log"
+
+case "$1" in
+  start)
+    echo "Starting YOLO Camera Service..." > $LOG_FILE
+    
+    # Run in background subshell to prevent blocking boot
+    (
+        # 1. Wait for system/drivers to stabilize
+        sleep 5
+        echo "[$(date)] Waited 5s. Starting..." >> $LOG_FILE
+
+        # 2. Setup Library Path (IMPORTANT for CVI SDK)
+        # Load global profile if exists to get LD_LIBRARY_PATH
+        [ -f /etc/profile ] && . /etc/profile
+        
+        # Explicitly add common library paths just in case
+        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib:/lib:/mnt/system/lib:/mnt/system/usr/lib
+        
+        # 3. Go to app directory
+        cd /root
+        
+        # 4. Run App
+        if [ -f "./Yolo_CSIStream" ]; then
+            echo "[$(date)] Executing binary..." >> $LOG_FILE
+            
+            # Run and redirect ALL output to log file for debugging
+            ./Yolo_CSIStream yolov8n_coco_640.cvimodel >> $LOG_FILE 2>&1
+            
+            echo "[$(date)] Program exited with code $?" >> $LOG_FILE
+        else
+            echo "[$(date)] ERROR: Binary not found at /root/Yolo_CSIStream" >> $LOG_FILE
+        fi
+    ) &
+    
+    echo "OK"
+    ;;
+  stop)
+    printf "Stopping YOLO Camera: "
+    killall Yolo_CSIStream
+    echo "OK"
+    ;;
+  restart|reload)
+    "$0" stop
+    "$0" start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+esac
+
+exit 0

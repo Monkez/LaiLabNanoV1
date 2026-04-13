@@ -1,0 +1,22 @@
+build/
+.vscode/
+
+# Old/stable versions (main.cpp is the current version)
+OTGCamera-YOLO-stablev1.cpp
+OTGCamera.cpp
+YoloOTGCamera_stable1.cpp
+YoloOTGCamera_stable2.cpp
+stable*.cpp
+stream_stable.cpp
+stableV2.cpp
+
+# Large binary model files (download separately, don't commit to git)
+*.cvimodel
+*.cvimodel?Zone.Identifier
+
+# Test scripts
+test_*.sh
+
+# Binary pin diagram (too large)
+pinouts.png
+duo-pinout.pdf

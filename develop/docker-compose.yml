@@ -1,0 +1,13 @@
+services:
+  licheerv-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: licheerv-nano-dev
+    image: licheerv-nano-dev:latest
+    volumes:
+      # Mount the Projects folder so code changes on host are reflected in container
+      - ./Projects:/workspace/projects
+    stdin_open: true  # -i
+    tty: true         # -t
+

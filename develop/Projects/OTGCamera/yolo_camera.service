@@ -1,0 +1,22 @@
+[Unit]
+Description=YOLO Camera Stream Service
+After=network.target
+# Đảm bảo network và camera driver đã load xong
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root
+# Lệnh chạy (chỉnh sửa resolution 800 600 ở đây nếu muốn)
+ExecStart=/root/Yolo_CSIStream /root/yolov8n_coco_640.cvimodel 800 600
+
+# Tự động khởi động lại nếu app crash
+Restart=always
+RestartSec=5
+
+# Redirect log ra journalctl (xem bằng: journalctl -u yolo_camera -f)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

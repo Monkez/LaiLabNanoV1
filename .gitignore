@@ -3,8 +3,8 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 dist/
-build/
 *.egg
+.venv/
 
 # Virtual environment
 venv/
@@ -28,8 +28,15 @@ desktop.ini
 # Gemini
 .gemini/
 
-# Temporary files
-*.txt
-!requirements.txt
+# Temporary/debug files
 tmp_*.py
-test_*.py
+check.py
+extract.py
+
+# Build outputs
+build/
+**/bin/
+
+# Large binary files
+*.cvimodel
+*.cvimodel?Zone.Identifier
