@@ -1,0 +1,9 @@
+build/
+.vscode/
+*.cvimodel:Zone.Identifier
+OTGCamera-YOLO-stablev1.cpp
+OTGCamera.cpp
+YoloOTGCamera_stable1.cpp
+YoloOTGCamera_stable2.cpp
+stable*.cpp
+stream_stable.cpp

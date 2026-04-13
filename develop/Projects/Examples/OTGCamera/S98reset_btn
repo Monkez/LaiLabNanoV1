@@ -1,0 +1,31 @@
+#!/bin/sh
+#
+# Start Reset Button daemon at boot
+# Runs before yolo_camera (S99) so button monitoring is always available
+#
+
+case "$1" in
+  start)
+    printf "Starting Reset Button daemon: "
+    if [ -f "/root/reset_btn" ]; then
+        /root/reset_btn --daemon --gpio 507 --hold 5 --ip 192.168.100.2
+        echo "OK"
+    else
+        echo "SKIP (binary not found)"
+    fi
+    ;;
+  stop)
+    printf "Stopping Reset Button daemon: "
+    killall reset_btn 2>/dev/null
+    echo "OK"
+    ;;
+  restart|reload)
+    "$0" stop
+    "$0" start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+esac
+
+exit 0
