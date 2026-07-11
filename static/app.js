@@ -31,6 +31,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // ---- WebSocket Connection ----
     let socket = null;
     const connectionStatus = document.getElementById('connectionStatus');
+    let activeDockerSetupTask = null;
+    let dockerSetupPollTimer = null;
 
     function connectWebSocket() {
         socket = io(window.location.origin, {
@@ -59,6 +61,36 @@ document.addEventListener('DOMContentLoaded', () => {
 
         socket.on('job_log', (data) => {
             appendLog(data);
+        });
+
+        socket.on('docker_setup_status', (data) => {
+            if (activeDockerSetupTask && activeDockerSetupTask !== 'pending' && data.task_id !== activeDockerSetupTask) return;
+            renderDockerSetupStatus(data);
+        });
+
+        socket.on('docker_setup_complete', async (data) => {
+            if (activeDockerSetupTask && activeDockerSetupTask !== 'pending' && data.task_id !== activeDockerSetupTask) return;
+            await completeDockerSetup(data);
+            return;
+
+            const lang = localStorage.getItem('lailab_lang') || 'en';
+            const ok = data.status === 'completed';
+            const message = ok
+                ? (lang === 'vi' ? `Container ${data.container} đã sẵn sàng.` : `Container ${data.container} is ready.`)
+                : (data.error || (lang === 'vi' ? `Không thể chuẩn bị ${data.container}.` : `Could not prepare ${data.container}.`));
+
+            setDockerSetupState(ok ? 'success' : 'error', message);
+            activeDockerSetupTask = null;
+
+            const btnDockerSetup = document.getElementById('btnDockerSetup');
+            if (btnDockerSetup) btnDockerSetup.disabled = false;
+
+            await checkDockerStatus();
+            const containerSelect = document.getElementById('dockerContainer');
+            if (containerSelect && data.container) {
+                const exists = [...containerSelect.options].some(o => o.value === data.container);
+                if (exists) containerSelect.value = data.container;
+            }
         });
 
         // Inference meta listener
@@ -182,6 +214,92 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ---- Docker Status Check ----
     const dockerStatusEl = document.getElementById('dockerStatus');
+    const btnDockerSetup = document.getElementById('btnDockerSetup');
+    const dockerSetupMeta = document.getElementById('dockerSetupMeta');
+    const dockerSetupProgress = document.getElementById('dockerSetupProgress');
+    const dockerSetupProgressFill = document.getElementById('dockerSetupProgressFill');
+    const dockerSetupBtnLabel = btnDockerSetup ? btnDockerSetup.querySelector('span') : null;
+    const dockerSetupDefaultLabel = dockerSetupBtnLabel ? dockerSetupBtnLabel.textContent : 'Download Docker Container';
+
+    function setDockerSetupState(state, message) {
+        if (!dockerSetupMeta) return;
+        dockerSetupMeta.className = `docker-setup-meta ${state || ''}`.trim();
+        dockerSetupMeta.textContent = message;
+    }
+
+    function setDockerSetupProgress(progress) {
+        const safeProgress = Math.max(0, Math.min(100, parseInt(progress || 0, 10)));
+        if (dockerSetupProgress) dockerSetupProgress.classList.remove('hidden');
+        if (dockerSetupProgressFill) dockerSetupProgressFill.style.width = `${safeProgress}%`;
+    }
+
+    function renderDockerSetupStatus(data) {
+        const state = data.status === 'failed' ? 'error' : data.status === 'completed' ? 'success' : 'running';
+        const progress = data.progress ?? (state === 'success' ? 100 : 0);
+        const message = data.error || data.message || `Preparing ${data.container || 'Docker container'}...`;
+        setDockerSetupState(state, `${progress}% - ${message}`);
+        setDockerSetupProgress(progress);
+
+        if (btnDockerSetup) btnDockerSetup.disabled = state === 'running';
+        if (dockerSetupBtnLabel) {
+            dockerSetupBtnLabel.textContent = state === 'running'
+                ? `Downloading... ${progress}%`
+                : dockerSetupDefaultLabel;
+        }
+    }
+
+    function stopDockerSetupPolling() {
+        if (dockerSetupPollTimer) {
+            clearInterval(dockerSetupPollTimer);
+            dockerSetupPollTimer = null;
+        }
+    }
+
+    function startDockerSetupPolling(taskId) {
+        stopDockerSetupPolling();
+        dockerSetupPollTimer = setInterval(async () => {
+            try {
+                const res = await fetch(`/api/docker/setup/${taskId}`);
+                const contentType = res.headers.get('content-type') || '';
+                const data = contentType.includes('application/json')
+                    ? await res.json()
+                    : { error: await res.text() };
+                if (!res.ok) throw new Error(data.error || 'Could not read Docker setup status.');
+
+                renderDockerSetupStatus(data);
+                if (data.status === 'completed' || data.status === 'failed') {
+                    await completeDockerSetup(data);
+                }
+            } catch (err) {
+                stopDockerSetupPolling();
+                activeDockerSetupTask = null;
+                if (btnDockerSetup) btnDockerSetup.disabled = false;
+                if (dockerSetupBtnLabel) dockerSetupBtnLabel.textContent = dockerSetupDefaultLabel;
+                setDockerSetupState('error', err.message);
+                appendLog({
+                    time: Date.now() / 1000,
+                    message: `Docker setup status error: ${err.message}`,
+                    level: 'error'
+                });
+            }
+        }, 1000);
+    }
+
+    async function completeDockerSetup(data) {
+        stopDockerSetupPolling();
+        renderDockerSetupStatus(data);
+        activeDockerSetupTask = null;
+
+        if (btnDockerSetup) btnDockerSetup.disabled = false;
+        if (dockerSetupBtnLabel) dockerSetupBtnLabel.textContent = dockerSetupDefaultLabel;
+
+        await checkDockerStatus();
+        const containerSelect = document.getElementById('dockerContainer');
+        if (containerSelect && data.container) {
+            const exists = [...containerSelect.options].some(o => o.value === data.container);
+            if (exists) containerSelect.value = data.container;
+        }
+    }
 
     async function checkDockerStatus() {
         try {
@@ -200,7 +318,16 @@ document.addEventListener('DOMContentLoaded', () => {
                     const containerSelect = document.getElementById('dockerContainer');
                     if (containerSelect && containerSelect.tagName === 'SELECT') {
                         const currentVal = containerSelect.value;
+                        const defaultContainer = 'TPU-LAILAB-NANO-CONTAINER';
+                        const hasDefault = data.containers.some(c => c.name === defaultContainer);
                         containerSelect.innerHTML = '';
+
+                        if (data.containers.length > 0 && !hasDefault) {
+                            const fallback = document.createElement('option');
+                            fallback.value = defaultContainer;
+                            fallback.textContent = 'TPU-LAILAB-NANO (auto)';
+                            containerSelect.appendChild(fallback);
+                        }
 
                         if (data.containers.length === 0) {
                             // No containers — use default container name
@@ -243,6 +370,67 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             return null;
         }
+    }
+
+    if (btnDockerSetup) {
+        btnDockerSetup.addEventListener('click', async () => {
+            const lang = localStorage.getItem('lailab_lang') || 'en';
+            const dockerEl = document.getElementById('dockerContainer');
+            const container = dockerEl ? dockerEl.value.trim() : 'TPU-LAILAB-NANO-CONTAINER';
+
+            if (!container) {
+                setDockerSetupState('error', lang === 'vi'
+                    ? 'Vui lòng chọn Docker container trước.'
+                    : 'Please select a Docker container first.');
+                return;
+            }
+
+            btnDockerSetup.disabled = true;
+            activeDockerSetupTask = 'pending';
+            clearLogs();
+            setDockerSetupProgress(1);
+            if (dockerSetupBtnLabel) dockerSetupBtnLabel.textContent = 'Starting...';
+            setDockerSetupState('running', lang === 'vi'
+                ? `Đang chuẩn bị ${container}...`
+                : `Preparing ${container}...`);
+            appendLog({
+                time: Date.now() / 1000,
+                message: lang === 'vi'
+                    ? `Bắt đầu tải/chuẩn bị Docker container "${container}".`
+                    : `Starting Docker container download/setup for "${container}".`,
+                level: 'info'
+            });
+
+            try {
+                const res = await fetch('/api/docker/setup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ container })
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    throw new Error(data.error || 'Docker setup failed');
+                }
+
+                if (activeDockerSetupTask !== null) {
+                    activeDockerSetupTask = data.task_id;
+                    renderDockerSetupStatus(data);
+                    startDockerSetupPolling(data.task_id);
+                }
+            } catch (err) {
+                stopDockerSetupPolling();
+                activeDockerSetupTask = null;
+                btnDockerSetup.disabled = false;
+                if (dockerSetupBtnLabel) dockerSetupBtnLabel.textContent = dockerSetupDefaultLabel;
+                setDockerSetupState('error', err.message);
+                appendLog({
+                    time: Date.now() / 1000,
+                    message: `Docker setup failed: ${err.message}`,
+                    level: 'error'
+                });
+            }
+        });
     }
 
     // ---- Presets ----
@@ -641,8 +829,8 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     const pageSubtitles = {
         'guide': { en: 'Quick Start Guide to Edge AI pipelines', vi: 'Hướng dẫn nhanh quy trình Edge AI' },
-        'model-prep': { en: 'Convert YOLO models for LicheeRV Nano deployment', vi: 'Chuyển đổi model YOLO cho LicheeRV Nano' },
-        'deploy': { en: 'Deploy models to LicheeRV Nano device', vi: 'Triển khai model lên thiết bị LicheeRV Nano' },
+        'model-prep': { en: 'Convert YOLO models for edge device deployment', vi: 'Chuyển đổi model YOLO cho thiết bị biên' },
+        'deploy': { en: 'Deploy models to LaiLab Nano device', vi: 'Triển khai model lên thiết bị LaiLab Nano' },
         'inference': { en: 'Run inference tests on deployed models', vi: 'Chạy kiểm thử inference trên model đã triển khai' },
     };
 

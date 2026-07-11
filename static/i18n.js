@@ -17,7 +17,7 @@ const translations = {
         hero_title_1: 'AI Inference',
         hero_title_2: 'On The Edge',
         hero_title_3: 'Redefined',
-        hero_desc: 'Deploy YOLO object detection models on LicheeRV Nano with lightning-fast 20 FPS real-time inference. No coding required. Compatible with any USB camera and embedded platforms.',
+        hero_desc: 'Deploy YOLO object detection models on LaiLab Nano with lightning-fast 20 FPS real-time inference. No coding required. Compatible with any USB camera and embedded platforms.',
         hero_cta_start: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><polygon points="5 3 19 12 5 21 5 3"/></svg>Get Started',
         hero_cta_learn: 'Learn More<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M7 17l9.2-9.2M17 17V7.8H7.8"/></svg>',
         stat_realtime: 'Real-time Detection',
@@ -32,7 +32,7 @@ const translations = {
         feature_1_title: 'Automated Model Conversion',
         feature_1_desc: 'One-click pipeline from YOLO .pt model to optimized .cvimodel. Handles ONNX export, MLIR transformation, INT8 quantization, and calibration automatically.',
         feature_2_title: 'Zero-Code Deployment',
-        feature_2_desc: 'Deploy models to LicheeRV Nano without writing a single line of code. Intuitive visual interface handles everything.',
+        feature_2_desc: 'Deploy models to LaiLab Nano without writing a single line of code. Intuitive visual interface handles everything.',
         feature_3_title: 'Lightning Performance',
         feature_3_desc: 'Achieve 20 FPS real-time object detection with ultra-low latency. Optimized INT8 quantization delivers maximum throughput.',
         feature_4_title: 'USB Camera Ready',
@@ -48,7 +48,7 @@ const translations = {
         spec_fps: 'Real-time YOLO Detection',
         spec_quant_unit: 'Quantization',
         spec_quant: 'Optimized Precision',
-        spec_processor: 'CVITEK Processor',
+        spec_processor: 'Custom AI Processor',
         spec_accel_unit: 'Accelerator',
         spec_accel: 'Dedicated AI Core',
         spec_camera: 'Plug & Play Input',
@@ -66,7 +66,7 @@ const translations = {
         step_3_title: 'Automated Conversion',
         step_3_desc: 'ONNX export → MLIR transform → INT8 calibration → CVI model deploy — all automated',
         step_4_title: 'Deploy to Device',
-        step_4_desc: 'Automatically transfer the optimized model to your LicheeRV Nano via SSH. Ready to run!',
+        step_4_desc: 'Automatically transfer the optimized model to your LaiLab Nano device via SSH. Ready to run!',
 
         // Compatible
         compat_tag: 'Compatibility',
@@ -84,14 +84,14 @@ const translations = {
         cta_button: 'Launch LaiLab Nano V1<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>',
 
         // Footer
-        footer_desc: 'AI Edge Inference Platform for LicheeRV Nano',
+        footer_desc: 'AI Edge Inference Platform',
         footer_product: 'Product',
         footer_resources: 'Resources',
         footer_docs: 'Documentation',
 
         // ======== APP PAGE ========
         app_title: 'Model Preparation',
-        app_subtitle: 'Convert YOLO models for LicheeRV Nano deployment',
+        app_subtitle: 'Convert YOLO models for edge device deployment',
         app_nav_guide: 'User Guide',
         app_nav_model_prep: 'Model Preparation',
         app_nav_deploy: 'Deployment',
@@ -107,7 +107,7 @@ const translations = {
         guide_step_1: '1. Model Preparation',
         guide_step_1_desc: 'Navigate to "Model Preparation" to upload a raw YOLO `.pt` model or pick a preset. Click "Start Conversion" to automate the ONNX → MLIR → CVI process. Ensure Docker is running in background.',
         guide_step_2: '2. Deployment',
-        guide_step_2_desc: 'Once the model becomes a `.cvimodel`, go to "Deployment". Enter your LicheeRV Nano IP address and click "Deploy". The system will automatically configure, transfer the model, and reboot the CSI stream on the edge device.',
+        guide_step_2_desc: 'Once the model becomes a `.cvimodel`, go to "Deployment". Enter your device IP address and click "Deploy". The system will automatically configure, transfer the model, and reboot the CSI stream on the edge device.',
         guide_step_3: '3. Test Inference',
         guide_step_3_desc: 'Go to "Test Inference" to test your deployed model in real-time. Use the Video stream to verify visual detection, and open the Serial Monitor to capture bounding box metrics via UART if configured.',
 
@@ -131,6 +131,8 @@ const translations = {
         form_start: 'Start Conversion',
         form_advanced: 'Advanced',
         form_docker_hint: 'Container will be auto-created if not found.',
+        docker_setup_btn: 'Download Docker Container',
+        docker_setup_hint: 'Pulls sophgo/tpuc_dev:latest and creates the selected container.',
 
         // Pipeline
         pipeline_title: 'Pipeline',
@@ -163,7 +165,7 @@ const translations = {
         hero_title_1: 'Suy luận AI',
         hero_title_2: 'Trên Thiết Bị Biên',
         hero_title_3: 'Được Tái Định Nghĩa',
-        hero_desc: 'Triển khai mô hình phát hiện đối tượng YOLO trên LicheeRV Nano với tốc độ suy luận thời gian thực 20 FPS siêu nhanh. Không cần lập trình. Tương thích với mọi camera USB và nền tảng nhúng.',
+        hero_desc: 'Triển khai mô hình phát hiện đối tượng YOLO trên LaiLab Nano với tốc độ suy luận thời gian thực 20 FPS siêu nhanh. Không cần lập trình. Tương thích với mọi camera USB và nền tảng nhúng.',
         hero_cta_start: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><polygon points="5 3 19 12 5 21 5 3"/></svg>Bắt đầu ngay',
         hero_cta_learn: 'Tìm hiểu thêm<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M7 17l9.2-9.2M17 17V7.8H7.8"/></svg>',
         stat_realtime: 'Phát hiện thời gian thực',
@@ -178,7 +180,7 @@ const translations = {
         feature_1_title: 'Chuyển đổi Model tự động',
         feature_1_desc: 'Pipeline một cú nhấp từ YOLO .pt sang .cvimodel tối ưu. Tự động xử lý xuất ONNX, chuyển đổi MLIR, lượng tử hóa INT8 và hiệu chuẩn.',
         feature_2_title: 'Triển khai không cần Code',
-        feature_2_desc: 'Triển khai mô hình lên LicheeRV Nano mà không cần viết một dòng code nào. Giao diện trực quan xử lý mọi thứ.',
+        feature_2_desc: 'Triển khai mô hình lên LaiLab Nano mà không cần viết một dòng code nào. Giao diện trực quan xử lý mọi thứ.',
         feature_3_title: 'Hiệu suất siêu nhanh',
         feature_3_desc: 'Đạt 20 FPS phát hiện đối tượng thời gian thực với độ trễ cực thấp. Lượng tử hóa INT8 tối ưu mang lại thông lượng tối đa.',
         feature_4_title: 'Sẵn sàng Camera USB',
@@ -194,7 +196,7 @@ const translations = {
         spec_fps: 'Phát hiện YOLO thời gian thực',
         spec_quant_unit: 'Lượng tử hóa',
         spec_quant: 'Độ chính xác tối ưu',
-        spec_processor: 'Bộ xử lý CVITEK',
+        spec_processor: 'Bộ xử lý AI tùy chỉnh',
         spec_accel_unit: 'Bộ tăng tốc',
         spec_accel: 'Lõi AI chuyên dụng',
         spec_camera: 'Đầu vào Cắm & Chạy',
@@ -212,7 +214,7 @@ const translations = {
         step_3_title: 'Chuyển đổi tự động',
         step_3_desc: 'Xuất ONNX → Chuyển đổi MLIR → Hiệu chuẩn INT8 → Triển khai CVI model — tất cả tự động',
         step_4_title: 'Triển khai lên thiết bị',
-        step_4_desc: 'Tự động truyền model đã tối ưu đến LicheeRV Nano qua SSH. Sẵn sàng chạy!',
+        step_4_desc: 'Tự động truyền model đã tối ưu đến thiết bị LaiLab Nano qua SSH. Sẵn sàng chạy!',
 
         // Compatible
         compat_tag: 'Tương thích',
@@ -230,14 +232,14 @@ const translations = {
         cta_button: 'Khởi chạy LaiLab Nano V1<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>',
 
         // Footer
-        footer_desc: 'Nền tảng Suy luận AI biên cho LicheeRV Nano',
+        footer_desc: 'Nền tảng Suy luận AI biên',
         footer_product: 'Sản phẩm',
         footer_resources: 'Tài nguyên',
         footer_docs: 'Tài liệu',
 
         // ======== APP PAGE ========
         app_title: 'Chuẩn bị Model',
-        app_subtitle: 'Chuyển đổi model YOLO để triển khai trên LicheeRV Nano',
+        app_subtitle: 'Chuyển đổi model YOLO để triển khai trên thiết bị biên',
         app_nav_guide: 'Hướng dẫn sử dụng',
         app_nav_model_prep: 'Chuẩn bị Model',
         app_nav_deploy: 'Triển khai',
@@ -253,7 +255,7 @@ const translations = {
         guide_step_1: '1. Chuẩn bị Mô hình (Model Prep)',
         guide_step_1_desc: 'Sang mục "Chuyển đổi Model" để upload model YOLO `.pt` hoặc chọn preset. Nhấn "Start" để tự động hóa quy trình ONNX → MLIR → CVI. Đảm bảo cấu hình Docker chạy ngầm.',
         guide_step_2: '2. Triển khai (Deployment)',
-        guide_step_2_desc: 'Khi model đã chuyển thành `.cvimodel`, sang mục "Triển khai". Nhập IP LicheeRV Nano và nhấn "Deploy". Hệ thống sẽ cấu hình và đổ model trực tiếp vào thiết bị.',
+        guide_step_2_desc: 'Khi model đã chuyển thành `.cvimodel`, sang mục "Triển khai". Nhập IP thiết bị và nhấn "Deploy". Hệ thống sẽ cấu hình và đổ model trực tiếp vào thiết bị.',
         guide_step_3: '3. Kiểm thử (Test Inference)',
         guide_step_3_desc: 'Mở trang "Kiểm thử Suy luận" để test luồng chạy thực tế. Dùng Video stream xem bbox trực quan, hoặc mở Serial Monitor kiểm tra tín hiệu gốc từ cổng COM.',
 
@@ -277,6 +279,8 @@ const translations = {
         form_start: 'Bắt đầu chuyển đổi',
         form_advanced: 'Nâng cao',
         form_docker_hint: 'Container tự động tạo nếu chưa có.',
+        docker_setup_btn: 'Tải Docker Container',
+        docker_setup_hint: 'Tải sophgo/tpuc_dev:latest và tạo container đang chọn.',
 
         // Pipeline
         pipeline_title: 'Pipeline',

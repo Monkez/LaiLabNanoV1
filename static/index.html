@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LaiLab Nano V1 — AI Edge Inference Platform</title>
-    <meta name="description" content="LaiLab Nano V1: Revolutionary AI Edge Inference. Deploy YOLO models on LicheeRV Nano with 20 FPS real-time detection. No code required.">
-    <meta name="keywords" content="AI, Edge Computing, YOLO, LicheeRV Nano, Object Detection, Inference, Embedded AI">
+    <meta name="description" content="LaiLab Nano V1: Revolutionary AI Edge Inference. Deploy YOLO models with 20 FPS real-time detection. No code required.">
+    <meta name="keywords" content="AI, Edge Computing, YOLO, Object Detection, Inference, Embedded AI, Edge AI">
 
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -90,7 +90,7 @@
             </h1>
 
             <p class="hero-desc" data-i18n="hero_desc">
-                Deploy YOLO object detection models on LicheeRV Nano with lightning-fast 20 FPS real-time inference. No coding required. Compatible with any USB camera and embedded platforms.
+                Deploy YOLO object detection models on LaiLab Nano with lightning-fast 20 FPS real-time inference. No coding required. Compatible with any USB camera and embedded platforms.
             </p>
 
             <div class="hero-actions">
@@ -130,39 +130,52 @@
         </div>
 
         <div class="hero-visual">
-            <div class="device-showcase">
-                <div class="device-card">
-                    <div class="device-screen">
-                        <div class="detection-demo">
-                            <div class="demo-frame">
-                                <div class="demo-object demo-obj-1">
-                                    <div class="bbox"></div>
-                                    <span class="bbox-label">person 0.95</span>
-                                </div>
-                                <div class="demo-object demo-obj-2">
-                                    <div class="bbox"></div>
-                                    <span class="bbox-label">car 0.89</span>
-                                </div>
-                                <div class="demo-object demo-obj-3">
-                                    <div class="bbox"></div>
-                                    <span class="bbox-label">dog 0.92</span>
+            <div class="hero-carousel" id="heroCarousel">
+                <div class="carousel-slide active-slide">
+                    <div class="device-showcase">
+                        <div class="device-card">
+                            <div class="device-screen">
+                                <div class="detection-demo">
+                                    <div class="demo-frame">
+                                        <div class="demo-object demo-obj-1">
+                                            <div class="bbox"></div>
+                                            <span class="bbox-label">person 0.95</span>
+                                        </div>
+                                        <div class="demo-object demo-obj-2">
+                                            <div class="bbox"></div>
+                                            <span class="bbox-label">car 0.89</span>
+                                        </div>
+                                        <div class="demo-object demo-obj-3">
+                                            <div class="bbox"></div>
+                                            <span class="bbox-label">dog 0.92</span>
+                                        </div>
+                                    </div>
+                                    <div class="demo-overlay">
+                                        <div class="demo-fps">20 FPS</div>
+                                        <div class="demo-model">YOLOv8n · INT8</div>
+                                    </div>
                                 </div>
                             </div>
-                            <div class="demo-overlay">
-                                <div class="demo-fps">20 FPS</div>
-                                <div class="demo-model">YOLOv8n · INT8</div>
+                            <div class="device-body">
+                                <div class="device-chip"></div>
+                                <div class="device-ports">
+                                    <div class="port"></div>
+                                    <div class="port"></div>
+                                    <div class="port"></div>
+                                </div>
+                                <div class="device-label">LaiLab Nano</div>
                             </div>
                         </div>
                     </div>
-                    <div class="device-body">
-                        <div class="device-chip"></div>
-                        <div class="device-ports">
-                            <div class="port"></div>
-                            <div class="port"></div>
-                            <div class="port"></div>
-                        </div>
-                        <div class="device-label">LicheeRV Nano</div>
-                    </div>
+                </div>
+
+                <div class="carousel-slide">
+                    <img src="/static/product.jpg" alt="LaiLab Nano V1 Hardware" class="product-hero-img">
+                </div>
+
+                <div class="carousel-controls">
+                    <button class="carousel-dot active"></button>
+                    <button class="carousel-dot"></button>
                 </div>
             </div>
         </div>
@@ -173,9 +186,154 @@
     </section>
 
     <!-- ============================================================ -->
-    <!-- FEATURES SECTION -->
+    <!-- KEY ADVANTAGES SECTION -->
     <!-- ============================================================ -->
     <section class="section features-section" id="features">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-tag" data-i18n="advantages_tag">Key Advantages</span>
+                <h2 class="section-title" data-i18n="advantages_title">Why LaiLab Nano?</h2>
+                <p class="section-desc" data-i18n="advantages_desc">
+                    Three breakthrough capabilities that set LaiLab Nano apart from traditional AI camera solutions.
+                </p>
+            </div>
+
+            <div class="advantages-grid advantages-grid-3">
+                <!-- Advantage 1: Direct Hardware Output -->
+                <div class="advantage-card advantage-card-hw">
+                    <div class="advantage-badge">
+                        <span class="advantage-badge-dot"></span>
+                        <span data-i18n="adv1_badge">Standalone Operation</span>
+                    </div>
+                    <div class="advantage-icon-area">
+                        <div class="advantage-icon-ring">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="36" height="36">
+                                <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+                            </svg>
+                        </div>
+                        <div class="advantage-connectors">
+                            <div class="connector-line"></div>
+                            <div class="connector-dot" style="top: 20%;"></div>
+                            <div class="connector-dot" style="top: 50%;"></div>
+                            <div class="connector-dot" style="top: 80%;"></div>
+                        </div>
+                        <div class="advantage-chips">
+                            <span class="advantage-chip">STM32</span>
+                            <span class="advantage-chip">Arduino</span>
+                            <span class="advantage-chip">ESP32</span>
+                        </div>
+                    </div>
+                    <h3 class="advantage-title" data-i18n="adv1_title">Direct Logic &amp; Serial Output</h3>
+                    <p class="advantage-desc" data-i18n="adv1_desc">
+                        Outputs GPIO logic signals and UART serial data directly to any embedded board — STM32, Arduino, ESP32, Raspberry Pi Pico — no PC required. Your AI vision system works standalone, powered by a simple USB power bank.
+                    </p>
+                    <div class="advantage-outputs">
+                        <div class="output-item">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                            <span>UART Serial (NMEA Protocol)</span>
+                        </div>
+                        <div class="output-item">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+                            <span>GPIO Logic Output</span>
+                        </div>
+                        <div class="output-item">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                            <span>HTTP / UDP Streaming</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Advantage 2: Scalable 1000s Cameras -->
+                <div class="advantage-card advantage-card-scale">
+                    <div class="advantage-badge">
+                        <span class="advantage-badge-dot"></span>
+                        <span data-i18n="adv2_badge">Massive Scale</span>
+                    </div>
+                    <div class="advantage-icon-area">
+                        <div class="advantage-icon-ring">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="36" height="36">
+                                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                                <line x1="8" y1="21" x2="16" y2="21"/>
+                                <line x1="12" y1="17" x2="12" y2="21"/>
+                            </svg>
+                        </div>
+                        <div class="advantage-scale-grid">
+                            <div class="scale-node"></div><div class="scale-node"></div><div class="scale-node"></div>
+                            <div class="scale-node"></div><div class="scale-node active"></div><div class="scale-node"></div>
+                            <div class="scale-node"></div><div class="scale-node"></div><div class="scale-node"></div>
+                        </div>
+                    </div>
+                    <h3 class="advantage-title" data-i18n="adv2_title">1000s of Cameras, Zero Servers</h3>
+                    <p class="advantage-desc" data-i18n="adv2_desc">
+                        Each board processes AI inference independently on-device. Build a network of thousands of smart cameras without expensive desktop computers or GPU servers as central hubs. Dramatically reduce infrastructure cost.
+                    </p>
+                    <div class="advantage-comparison">
+                        <div class="comparison-item comparison-old">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                            <div>
+                                <strong data-i18n="adv2_old_title">Traditional</strong>
+                                <span data-i18n="adv2_old_desc">Cameras → Central Server (GPU) → Output</span>
+                            </div>
+                        </div>
+                        <div class="comparison-item comparison-new">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                            <div>
+                                <strong data-i18n="adv2_new_title">LaiLab Nano</strong>
+                                <span data-i18n="adv2_new_desc">Each Camera = Self-contained AI Node</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Advantage 3: Zero-Code Deployment -->
+                <div class="advantage-card advantage-card-zerocode">
+                    <div class="advantage-badge">
+                        <span class="advantage-badge-dot"></span>
+                        <span data-i18n="adv3_badge">No Code Required</span>
+                    </div>
+                    <div class="advantage-icon-area">
+                        <div class="advantage-icon-ring">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="36" height="36">
+                                <rect x="4" y="4" width="16" height="16" rx="2"/>
+                                <path d="M9 9h6v6H9z"/>
+                                <path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/>
+                            </svg>
+                        </div>
+                        <div class="advantage-steps-visual">
+                            <div class="step-dot step-dot-1"></div>
+                            <div class="step-line-h"></div>
+                            <div class="step-dot step-dot-2"></div>
+                            <div class="step-line-h"></div>
+                            <div class="step-dot step-dot-3"></div>
+                        </div>
+                    </div>
+                    <h3 class="advantage-title" data-i18n="adv3_title">Zero-Code Deployment</h3>
+                    <p class="advantage-desc" data-i18n="adv3_desc">
+                        Upload your YOLO model, click deploy, and you're done. Our automated pipeline handles ONNX export, INT8 quantization, and device transfer — all through a visual web interface. No command line needed.
+                    </p>
+                    <div class="advantage-outputs">
+                        <div class="output-item">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                            <span>Drag &amp; Drop Model Upload</span>
+                        </div>
+                        <div class="output-item">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                            <span>One-Click Conversion Pipeline</span>
+                        </div>
+                        <div class="output-item">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                            <span>Auto-Deploy via SSH</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- FEATURES SECTION -->
+    <!-- ============================================================ -->
+    <section class="section" id="details">
         <div class="container">
             <div class="section-header">
                 <span class="section-tag" data-i18n="features_tag">Features</span>
@@ -204,20 +362,6 @@
                         <span class="tag">INT8</span>
                         <span class="tag">Calibration</span>
                     </div>
-                </div>
-
-                <div class="feature-card">
-                    <div class="feature-icon feature-icon-blue">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                            <rect x="4" y="4" width="16" height="16" rx="2"/>
-                            <path d="M9 9h6v6H9z"/>
-                            <path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/>
-                        </svg>
-                    </div>
-                    <h3 class="feature-title" data-i18n="feature_2_title">Zero-Code Deployment</h3>
-                    <p class="feature-desc" data-i18n="feature_2_desc">
-                        Deploy models to LicheeRV Nano without writing a single line of code. Intuitive visual interface handles everything.
-                    </p>
                 </div>
 
                 <div class="feature-card">
@@ -281,8 +425,6 @@
     </section>
 
     <!-- ============================================================ -->
-    <!-- SPECS SECTION -->
-    <!-- ============================================================ -->
     <section class="section specs-section" id="specs">
         <div class="container">
             <div class="section-header">
@@ -302,9 +444,9 @@
                     <div class="spec-label" data-i18n="spec_quant">Optimized Precision</div>
                 </div>
                 <div class="spec-card">
-                    <div class="spec-number">CV181x</div>
+                    <div class="spec-number">RISC-V</div>
                     <div class="spec-unit">SoC</div>
-                    <div class="spec-label" data-i18n="spec_processor">CVITEK Processor</div>
+                    <div class="spec-label" data-i18n="spec_processor">Custom AI Processor</div>
                 </div>
                 <div class="spec-card">
                     <div class="spec-number">TPU</div>
@@ -389,7 +531,7 @@
                     <div class="step-number">04</div>
                     <div class="step-content">
                         <h3 data-i18n="step_4_title">Deploy to Device</h3>
-                        <p data-i18n="step_4_desc">Automatically transfer the optimized model to your LicheeRV Nano via SSH. Ready to run!</p>
+                        <p data-i18n="step_4_desc">Automatically transfer the optimized model to your LaiLab Nano device via SSH. Ready to run!</p>
                     </div>
                     <div class="step-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -499,7 +641,7 @@
                         </div>
                         <span class="logo-text">LaiLab <span class="logo-accent">Nano</span></span>
                     </div>
-                    <p class="footer-desc" data-i18n="footer_desc">AI Edge Inference Platform for LicheeRV Nano</p>
+                    <p class="footer-desc" data-i18n="footer_desc">AI Edge Inference Platform</p>
                 </div>
                 <div class="footer-links">
                     <div class="footer-col">
@@ -510,9 +652,8 @@
                     </div>
                     <div class="footer-col">
                         <h4 data-i18n="footer_resources">Resources</h4>
-                        <a href="https://github.com/ret7020/LicheeRVNano" target="_blank">GitHub</a>
-                        <a href="https://milkv.io/docs/duo/overview" target="_blank" data-i18n="footer_docs">Documentation</a>
-                        <a href="https://github.com/sophgo/tpu-mlir" target="_blank">TPU-MLIR</a>
+                        <a href="#" data-i18n="footer_docs">Documentation</a>
+                        <a href="#">Support</a>
                     </div>
                 </div>
             </div>

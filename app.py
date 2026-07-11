@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 import shlex
+import re
 import serial
 import serial.tools.list_ports
 import signal
@@ -44,6 +45,8 @@ DOCKER_WORK_BASE = '/workspace/tpu-mlir'
 
 # Track running jobs
 jobs = {}
+# Track Docker setup requests
+docker_setup_tasks = {}
 # Track running subprocesses for cancellation
 running_processes = {}
 
@@ -185,7 +188,7 @@ def docker_image_exists(image):
         return False
 
 
-def docker_pull_image(image, job=None):
+def docker_pull_image(image, job=None, progress_callback=None):
     """Pull a Docker image from registry."""
     try:
         if job:
@@ -201,10 +204,15 @@ def docker_pull_image(image, job=None):
             errors='replace'
         )
 
+        line_count = 0
         for line in iter(process.stdout.readline, ''):
             line = line.rstrip('\n\r')
-            if line and job:
-                emit_log(job, line, 'info')
+            if line:
+                line_count += 1
+                if job:
+                    emit_log(job, line, 'info')
+                if progress_callback:
+                    progress_callback(min(80, 30 + line_count * 2), line)
 
         process.stdout.close()
         return_code = process.wait()
@@ -386,6 +394,131 @@ def step_fail(job, step_idx, error_msg):
     job.status = 'failed'
     emit_log(job, f'❌ {error_msg}', 'error')
     emit_job_update(job)
+
+
+class DockerSetupTask:
+    """Small job-like object used to stream Docker setup logs to the UI."""
+
+    def __init__(self, task_id, container):
+        self.job_id = task_id
+        self.container = container
+        self.status = 'pending'
+        self.progress = 0
+        self.message = 'Pending'
+        self.error = None
+        self.logs = []
+        self.created_at = time.time()
+
+    def to_dict(self):
+        return {
+            'task_id': self.job_id,
+            'status': self.status,
+            'container': self.container,
+            'image': DOCKER_IMAGE,
+            'progress': self.progress,
+            'message': self.message,
+            'error': self.error,
+            'created_at': self.created_at,
+            'logs': self.logs[-200:],
+        }
+
+
+def valid_docker_container_name(name):
+    """Validate a Docker container name before passing it to docker commands."""
+    return bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', name or ''))
+
+
+def emit_docker_setup_status(task, progress=None, message=None, log_level=None):
+    """Update and broadcast Docker setup progress."""
+    if progress is not None:
+        task.progress = max(0, min(100, int(progress)))
+    if message:
+        task.message = message
+        if log_level:
+            emit_log(task, message, log_level)
+
+    socketio.emit('docker_setup_status', task.to_dict(), namespace='/')
+
+
+def finish_docker_setup(task, status, message, error=None):
+    """Broadcast final Docker setup status."""
+    task.status = status
+    task.error = error
+    task.message = message
+    if status == 'completed':
+        task.progress = 100
+        emit_log(task, message, 'success')
+    else:
+        emit_log(task, message, 'error')
+
+    socketio.emit('docker_setup_complete', task.to_dict(), namespace='/')
+
+
+def run_docker_setup(task):
+    """Pull the required Docker image if needed and ensure the selected container is running."""
+    task.status = 'running'
+    emit_docker_setup_status(
+        task,
+        5,
+        f'Checking Docker before preparing "{task.container}"...',
+        'info'
+    )
+
+    try:
+        result = subprocess.run(
+            ['docker', 'info'], capture_output=True, text=True, timeout=10
+        )
+        if result.returncode != 0:
+            message = 'Docker is not running or cannot be reached. Please start Docker Desktop and try again.'
+            finish_docker_setup(task, 'failed', message, message)
+            return
+    except FileNotFoundError:
+        message = 'Docker is not installed or docker command is not in PATH.'
+        finish_docker_setup(task, 'failed', message, message)
+        return
+    except Exception as e:
+        message = f'Docker check failed: {str(e)}'
+        finish_docker_setup(task, 'failed', message, message)
+        return
+
+    emit_docker_setup_status(task, 12, 'Docker is running.', 'success')
+
+    if docker_container_exists(task.container):
+        if docker_is_running(task.container):
+            finish_docker_setup(task, 'completed', f'Docker container "{task.container}" is already running.')
+            return
+
+        emit_docker_setup_status(task, 45, f'Starting stopped container "{task.container}"...', 'info')
+        if docker_start(task.container):
+            finish_docker_setup(task, 'completed', f'Docker container "{task.container}" started and is ready.')
+        else:
+            message = f'Failed to start Docker container "{task.container}".'
+            finish_docker_setup(task, 'failed', message, message)
+        return
+
+    emit_docker_setup_status(task, 20, f'Container "{task.container}" not found. Preparing a new one...', 'warning')
+
+    if not docker_image_exists(DOCKER_IMAGE):
+        emit_docker_setup_status(task, 25, f'Pulling Docker image "{DOCKER_IMAGE}". This can take a while...', 'warning')
+
+        def on_pull_progress(progress, line):
+            emit_docker_setup_status(task, progress, f'Pulling image: {line}')
+
+        if not docker_pull_image(DOCKER_IMAGE, task, on_pull_progress):
+            message = f'Failed to pull Docker image "{DOCKER_IMAGE}". Check your internet connection.'
+            finish_docker_setup(task, 'failed', message, message)
+            return
+
+        emit_docker_setup_status(task, 85, f'Docker image "{DOCKER_IMAGE}" downloaded.', 'success')
+    else:
+        emit_docker_setup_status(task, 55, f'Docker image "{DOCKER_IMAGE}" already exists locally.', 'success')
+
+    emit_docker_setup_status(task, 90, f'Creating container "{task.container}"...', 'info')
+    if docker_create_container(task.container, DOCKER_IMAGE, task):
+        finish_docker_setup(task, 'completed', f'Docker container "{task.container}" created and is ready.')
+    else:
+        message = f'Docker container "{task.container}" could not be created.'
+        finish_docker_setup(task, 'failed', message, message)
 
 
 def run_conversion_pipeline(job):
@@ -894,6 +1027,43 @@ def docker_status():
             'containers': [],
             'error': str(e)
         })
+
+
+@app.route('/api/docker/setup', methods=['POST'])
+def docker_setup():
+    """Start a background task that pulls the required Docker image and creates/starts a container."""
+    data = request.get_json(silent=True) or {}
+    container = (data.get('container') or DOCKER_DEFAULT_CONTAINER).strip()
+
+    if not valid_docker_container_name(container):
+        return jsonify({
+            'error': 'Invalid Docker container name. Use letters, numbers, dots, underscores, or hyphens.'
+        }), 400
+
+    task_id = f'docker-setup-{str(uuid.uuid4())[:8]}'
+    task = DockerSetupTask(task_id, container)
+    docker_setup_tasks[task_id] = task
+
+    thread = threading.Thread(target=run_docker_setup, args=(task,), daemon=True)
+    thread.start()
+
+    return jsonify({
+        'task_id': task_id,
+        'status': task.status,
+        'container': container,
+        'image': DOCKER_IMAGE,
+        'progress': task.progress,
+        'message': task.message,
+    }), 202
+
+
+@app.route('/api/docker/setup/<task_id>', methods=['GET'])
+def docker_setup_status(task_id):
+    """Return the latest state for a Docker setup task."""
+    task = docker_setup_tasks.get(task_id)
+    if not task:
+        return jsonify({'error': 'Docker setup task not found'}), 404
+    return jsonify(task.to_dict())
 
 
 # ---- File Upload ----

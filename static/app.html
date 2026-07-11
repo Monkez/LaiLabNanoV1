@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LaiLab Nano V1 — Model Preparation</title>
-    <meta name="description" content="Convert and deploy YOLO models to LicheeRV Nano with automated pipeline.">
+    <meta name="description" content="Convert and deploy YOLO models to edge devices with automated pipeline.">
 
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -85,7 +85,7 @@
                 </button>
                 <div class="topbar-title">
                     <h1 data-i18n="app_title">Model Preparation</h1>
-                    <p data-i18n="app_subtitle">Convert YOLO models for LicheeRV Nano deployment</p>
+                    <p data-i18n="app_subtitle">Convert YOLO models for edge device deployment</p>
                 </div>
                 <div class="topbar-actions">
                     <div class="connection-status" id="dockerStatus">
@@ -120,7 +120,7 @@
                                     <div style="flex-shrink:0; width:44px; height:44px; border-radius:50%; background:var(--accent-glow); border:1px solid var(--border-accent); display:flex; align-items:center; justify-content:center; color:var(--accent-primary); font-weight:700; font-size:18px;">2</div>
                                     <div>
                                         <h3 style="margin:0 0 6px 0; font-size:15px; font-weight:600; color:var(--text-primary);" data-i18n="guide_step_2">2. Deployment</h3>
-                                        <p style="margin:0; font-size:13px; color:var(--text-secondary); line-height:1.6;" data-i18n="guide_step_2_desc">Once the model becomes a `.cvimodel`, go to "Deployment". Enter your LicheeRV Nano IP address and click "Deploy". The system will automatically configure, transfer the model, and reboot the CSI stream on the edge device.</p>
+                                        <p style="margin:0; font-size:13px; color:var(--text-secondary); line-height:1.6;" data-i18n="guide_step_2_desc">Once the model becomes a `.cvimodel`, go to "Deployment". Enter your device IP address and click "Deploy". The system will automatically configure, transfer the model, and reboot the CSI stream on the edge device.</p>
                                     </div>
                                 </div>
                                 <div style="display:flex; gap:16px;">
@@ -193,7 +193,7 @@
                                         <label for="processor" data-i18n="form_processor">Processor</label>
                                         <div class="config-inputs">
                                             <select id="processor" class="form-select form-input-sm" style="width: 100%; min-width: 180px;">
-                                                <option value="cv181x">CV181x (LicheeRV Nano)</option>
+                                                <option value="cv181x">LaiLab Nano V1</option>
                                                 <option value="cv180x">CV180x</option>
                                             </select>
                                         </div>
@@ -240,6 +240,14 @@
                                             </select>
                                         </div>
                                     </div>
+                                    <button type="button" class="btn-secondary btn-sm btn-docker-setup" id="btnDockerSetup">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                        <span data-i18n="docker_setup_btn">Download Docker Container</span>
+                                    </button>
+                                    <div class="docker-progress hidden" id="dockerSetupProgress">
+                                        <div class="docker-progress-fill" id="dockerSetupProgressFill"></div>
+                                    </div>
+                                    <div class="docker-setup-meta" id="dockerSetupMeta" data-i18n="docker_setup_hint">Pulls sophgo/tpuc_dev:latest and creates the selected container.</div>
                                     <div class="config-row">
                                         <label for="tolerance" data-i18n="form_tolerance">Tolerance</label>
                                         <div class="config-inputs">

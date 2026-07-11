@@ -30,13 +30,26 @@ A high-performance C++ application for the LicheeRV Nano (SG2002/CV1800B) that s
 
 ## Build Instructions
 
+### Recommended: Docker on Windows
+
+From the repository root:
+
+```bat
+setup.bat
+build_inference.bat
+```
+
+`setup.bat` installs the web backend dependencies, builds the RISC-V development
+container, downloads the CVITEK TDL SDK and prepares OpenCV Mobile. The binaries
+are generated under `develop/Projects/OTGCamera/build/`.
+
+### Build manually inside the development container
+
 On your Linux build machine (with the SDK environment configured):
 
 ```bash
-mkdir build
-cd build
-cmake ..
-make -j$(nproc)
+bash scripts/setup_deps.sh
+bash scripts/build.sh
 ```
 
 Transfer the resulting `Yolo_CSIStream` binary to your board.

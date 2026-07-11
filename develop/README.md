@@ -6,6 +6,23 @@ Based on: [LicheeRV Nano — Board programming (Part 2)](https://medium.com/@ret
 
 ## Quick Start
 
+### Windows: automated setup
+
+Run this from the repository root. It prepares both the Python web environment and
+the RISC-V/CVITEK inference toolchain:
+
+```bat
+setup.bat
+```
+
+Build the board binaries with:
+
+```bat
+build_inference.bat
+```
+
+The output is written to `develop/Projects/OTGCamera/build/`.
+
 ### 1. Build the Docker image
 
 ```bash
@@ -31,6 +48,13 @@ docker exec -it licheerv-nano-dev bash
 cd /workspace/projects
 chmod +x build_all.sh
 ./build_all.sh
+```
+
+`build_all.sh` builds the small peripheral examples only. To build the camera and
+YOLO inference application inside the container, run:
+
+```bash
+bash /workspace/projects/OTGCamera/scripts/build.sh
 ```
 
 ### 5. Build a single project

@@ -471,6 +471,43 @@
 }
 .btn-secondary:hover { background: rgba(99, 102, 241, 0.15); border-color: var(--accent-primary); }
 .btn-sm { padding: 5px 10px; font-size: 11px; }
+.btn-docker-setup {
+    margin-top: 2px;
+}
+.btn-docker-setup:disabled {
+    opacity: 0.65;
+    cursor: wait;
+}
+.docker-progress {
+    height: 5px;
+    overflow: hidden;
+    border-radius: var(--radius-full);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-primary);
+}
+.docker-progress-fill {
+    width: 0%;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent-gradient);
+    transition: width 0.3s ease;
+}
+.docker-setup-meta {
+    min-height: 16px;
+    font-size: 10px;
+    line-height: 1.4;
+    color: var(--text-tertiary);
+    word-break: break-word;
+}
+.docker-setup-meta.success {
+    color: var(--success);
+}
+.docker-setup-meta.error {
+    color: var(--error);
+}
+.docker-setup-meta.running {
+    color: var(--accent-primary);
+}
 
 /* Deploy button in card */
 .deploy-card .btn-deploy { margin-top: 2px; padding: 8px 12px; font-size: 12px; }

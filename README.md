@@ -68,6 +68,49 @@ LicheeRVNano/
 
 ## 🚀 Cài đặt & Khởi chạy
 
+### Cài đặt môi trường phát triển đầy đủ trên Windows
+
+Yêu cầu cài sẵn:
+
+- Python 3.10 trở lên.
+- Docker Desktop đang chạy với WSL 2 backend.
+- Git.
+
+Từ thư mục gốc của dự án, chạy:
+
+```bat
+setup.bat
+```
+
+Script này sẽ tự động:
+
+1. Tạo hoặc sửa lại Python virtual environment `.venv`.
+2. Cài toàn bộ thư viện backend từ `requirements.txt`.
+3. Build Docker image chứa RISC-V cross-compiler và CVITEK TDL SDK.
+4. Tải OpenCV Mobile dành cho LicheeRV Nano.
+5. Kiểm tra các dependency cần cho web và inference.
+
+Sau khi setup:
+
+```bat
+start.bat
+```
+
+Để build lại chương trình chạy trên board:
+
+```bat
+build_inference.bat
+```
+
+Binary được tạo tại:
+
+```text
+develop\Projects\OTGCamera\build\Yolo_CSIStream
+develop\Projects\OTGCamera\build\reset_btn
+```
+
+Frontend dùng HTML/CSS/JavaScript thuần trong `static/`, vì vậy không cần Node.js hoặc npm.
+
 ### 1. Clone dự án
 
 ```bash

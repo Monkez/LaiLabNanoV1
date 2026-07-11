@@ -134,4 +134,39 @@ document.addEventListener('DOMContentLoaded', () => {
         obj.style.animationDelay = `${startDelay}s`;
         obj.classList.add('demo-animate');
     });
+
+    // ---- Hero Carousel ----
+    const slides = document.querySelectorAll('.carousel-slide');
+    const dots = document.querySelectorAll('.carousel-dot');
+    let currentSlide = 0;
+    let slideInterval;
+
+    if (slides.length > 0) {
+        const showSlide = (index) => {
+            slides.forEach(s => s.classList.remove('active-slide'));
+            dots.forEach(d => d.classList.remove('active'));
+
+            slides[index].classList.add('active-slide');
+            if (dots[index]) dots[index].classList.add('active');
+            currentSlide = index;
+        };
+
+        const nextSlide = () => {
+            let next = currentSlide + 1;
+            if (next >= slides.length) next = 0;
+            showSlide(next);
+        };
+
+        // Auto transition every 4 seconds
+        slideInterval = setInterval(nextSlide, 4000);
+
+        // Dot click handlers
+        dots.forEach((dot, index) => {
+            dot.addEventListener('click', () => {
+                clearInterval(slideInterval);
+                showSlide(index);
+                slideInterval = setInterval(nextSlide, 4000);
+            });
+        });
+    }
 });
