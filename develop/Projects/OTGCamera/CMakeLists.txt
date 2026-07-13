@@ -44,3 +44,7 @@ target_link_libraries(Yolo_CSIStream
 add_executable(reset_btn reset_btn.cpp)
 target_compile_options(reset_btn PRIVATE -O2)
 target_link_libraries(reset_btn -lpthread)
+
+# Hardware diagnostic: validates USB/UVC dequeue-requeue independently of VPSS.
+add_executable(v4l2_requeue_test tools/v4l2_requeue_test.c)
+target_compile_options(v4l2_requeue_test PRIVATE -O2)

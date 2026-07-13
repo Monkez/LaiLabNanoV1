@@ -111,6 +111,30 @@ develop\Projects\OTGCamera\build\reset_btn
 
 Frontend dùng HTML/CSS/JavaScript thuần trong `static/`, vì vậy không cần Node.js hoặc npm.
 
+### Chế độ inference khi Deployment
+
+Tab **Deployment** cấu hình một binary runtime duy nhất với ba scheduler:
+
+- `continuous`: inference liên tục trên frame mới nhất. Frame YOLO cũ được bỏ qua để giữ latency thấp; MJPEG Ethernet có thể tắt độc lập để dành tài nguyên cho TPU.
+- `trigger`: chỉ inference khi nhận trigger từ UART (`TRIGGER\n`), Ethernet UDP hoặc cạnh GPIO. Hàng đợi trigger/capture cố định tối đa 3 phần tử; trigger đến khi hàng đợi đầy bị drop có thống kê thay vì làm latency tăng không giới hạn.
+- `all`: inference liên tục và gắn các trigger đang chờ với kết quả inference kế tiếp, tránh chạy TPU hai lần trên cùng luồng hình.
+
+Detection output dùng chung một JSON schema. Ethernet gửi JSON qua UDP (mặc định port `8081`); UART gửi JSON Lines. Có thể chọn Ethernet, UART, cả hai hoặc tắt output. Ethernet trigger mặc định nhận datagram trên UDP port `8082`; nội dung datagram không quan trọng.
+
+Các trường quan trọng trong output: `mode`, `seq`, `triggered`, `trigger_id`, `trigger_latency_us`, `queue_depth`, `trigger_dropped`, `inference_us` và `objs`.
+
+Kiểm tra nhanh các boundary bảo mật của backend:
+
+```bat
+.venv\Scripts\python.exe -m unittest discover -s tests
+```
+
+### Bảo mật khi triển khai
+
+Server mặc định chỉ lắng nghe tại `127.0.0.1`. Nếu cần truy cập từ mạng LAN,
+hãy cấu hình API token và SSH known-hosts theo [SECURITY.md](SECURITY.md) trước
+khi đổi `LAI_LAB_HOST` thành `0.0.0.0`.
+
 ### 1. Clone dự án
 
 ```bash
@@ -265,6 +289,16 @@ Pipeline tự động thực hiện 6 bước:
 ## 📝 Lệnh chuyển đổi thủ công (tham khảo)
 
 Nếu muốn chạy thủ công trong Docker:
+
+The first TPU-MLIR build can take more than 30 minutes. The backend now waits
+up to 7200 seconds by default and keeps an incomplete build so the next run can
+resume it. To allow a longer build on a slower machine, set this before starting
+the backend:
+
+```powershell
+$env:LAI_LAB_TPU_MLIR_BUILD_TIMEOUT = "10800"
+python app.py
+```
 
 ```bash
 docker start MyName

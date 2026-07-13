@@ -14,45 +14,151 @@ import time
 import uuid
 import shlex
 import re
+import ipaddress
+import secrets
+import io
 import serial
 import serial.tools.list_ports
 import signal
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_from_directory, send_file, Response
-from flask_cors import CORS
 from flask_socketio import SocketIO, emit
+from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
+BASE_DIR = Path(__file__).resolve().parent
 app = Flask(__name__, static_folder='static', template_folder='templates')
-CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+# This application controls Docker, serial ports and SSH. Keep browser access same-origin.
+socketio = SocketIO(app, cors_allowed_origins=None, async_mode='threading')
 
 # ============================================================
 # Configuration
 # ============================================================
-UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
-OUTPUT_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'outputs')
+UPLOAD_FOLDER = BASE_DIR / 'uploads'
+OUTPUT_FOLDER = BASE_DIR / 'outputs'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 ALLOWED_EXTENSIONS = {'pt'}
+ALLOWED_MODEL_EXTENSIONS = {'cvimodel'}
+MAX_UPLOAD_BYTES = int(os.getenv('LAI_LAB_MAX_UPLOAD_MB', '1024')) * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_BYTES
+API_TOKEN = os.getenv('LAI_LAB_API_TOKEN', '')
+SSH_KNOWN_HOSTS = os.getenv('LAI_LAB_SSH_KNOWN_HOSTS', str(Path.home() / '.ssh' / 'known_hosts'))
 
 # Docker configuration
 DOCKER_IMAGE = 'sophgo/tpuc_dev:latest'
 DOCKER_DEFAULT_CONTAINER = 'TPU-LAILAB-NANO-CONTAINER'
 DOCKER_TPU_MLIR_PATH = '/workspace/tpu-mlir'
 DOCKER_WORK_BASE = '/workspace/tpu-mlir'
+TPU_MLIR_VERSION = 'v1.7'
+# A clean TPU-MLIR build can exceed 30 minutes on Docker Desktop, especially
+# when CPU/RAM assigned to the VM is limited. Allow deployments to tune this.
+TPU_MLIR_BUILD_TIMEOUT = max(1800, int(os.getenv('LAI_LAB_TPU_MLIR_BUILD_TIMEOUT', '7200')))
+TPU_MLIR_BUILD_MARKER = f'{DOCKER_TPU_MLIR_PATH}/.lailab-build-complete-{TPU_MLIR_VERSION}'
+# TPU-MLIR v1.7's native activation collector can segfault with large YOLO11
+# calibration sets. Fifty images was verified with the 320x320 YOLO11 graph.
+TPU_MLIR_SAFE_CALIBRATION_IMAGES = 50
 
 # Track running jobs
 jobs = {}
+jobs_lock = threading.RLock()
 # Track Docker setup requests
 docker_setup_tasks = {}
 # Track running subprocesses for cancellation
 running_processes = {}
+device_lock = threading.RLock()
+deployment_lock = threading.Lock()
+
+
+def api_error(message, status=400):
+    return jsonify({'error': message}), status
+
+
+def request_data():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        raise ValueError('A JSON object is required.')
+    return data
+
+
+def safe_filename(name, extensions):
+    if not isinstance(name, str):
+        return None
+    name = secure_filename(name)
+    if not name or '.' not in name:
+        return None
+    extension = name.rsplit('.', 1)[1].lower()
+    return name if extension in extensions else None
+
+
+def safe_path(folder, filename, extensions):
+    name = safe_filename(filename, extensions)
+    if not name:
+        return None
+    candidate = (Path(folder) / name).resolve()
+    try:
+        candidate.relative_to(Path(folder).resolve())
+    except ValueError:
+        return None
+    return candidate
+
+
+def valid_ipv4(value):
+    try:
+        return str(ipaddress.IPv4Address(str(value).strip()))
+    except (ipaddress.AddressValueError, ValueError):
+        return None
+
+
+def bounded_int(value, name, minimum, maximum):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f'{name} must be an integer.')
+    if not minimum <= parsed <= maximum:
+        raise ValueError(f'{name} must be between {minimum} and {maximum}.')
+    return parsed
+
+
+def bounded_float(value, name, minimum, maximum):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f'{name} must be a number.')
+    if not minimum <= parsed <= maximum:
+        raise ValueError(f'{name} must be between {minimum} and {maximum}.')
+    return parsed
+
+
+def build_ssh_client():
+    import paramiko
+    client = paramiko.SSHClient()
+    if os.path.exists(SSH_KNOWN_HOSTS):
+        client.load_host_keys(SSH_KNOWN_HOSTS)
+    client.load_system_host_keys()
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    return client
+
+
+@app.before_request
+def protect_api():
+    """Optional bearer token for deployments that deliberately expose the UI."""
+    if not API_TOKEN or not request.path.startswith('/api/'):
+        return None
+    provided = request.headers.get('X-Api-Token', '')
+    if not secrets.compare_digest(provided, API_TOKEN):
+        return api_error('Unauthorized', 401)
+    return None
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def upload_too_large(_error):
+    return api_error(f'Upload exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.', 413)
 
 
 def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return safe_filename(filename, ALLOWED_EXTENSIONS) is not None
 
 
 # ============================================================
@@ -110,7 +216,7 @@ def docker_exec(container, command, cwd=None, job=None, timeout=None):
                 return False, '\n'.join(output_lines)
 
             # Check if job was cancelled
-            if job and job.status == 'failed':
+            if job and job.status in {'failed', 'cancelled'}:
                 process.kill()
                 return False, '\n'.join(output_lines)
 
@@ -346,6 +452,9 @@ class ConversionJob:
         self.output_model = None  # path on host to output .cvimodel
 
     def to_dict(self):
+        # Keep the host path private and JSON-safe. Internally output_model may
+        # be a pathlib.Path; clients only need its filename for display.
+        output_model = Path(self.output_model).name if self.output_model else None
         return {
             'job_id': self.job_id,
             'config': self.config,
@@ -355,7 +464,7 @@ class ConversionJob:
             'steps': self.steps,
             'created_at': self.created_at,
             'logs': self.logs[-200:],
-            'output_model': self.output_model,
+            'output_model': output_model,
         }
 
 
@@ -426,6 +535,42 @@ class DockerSetupTask:
 def valid_docker_container_name(name):
     """Validate a Docker container name before passing it to docker commands."""
     return bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', name or ''))
+
+
+def validate_conversion_config(data):
+    if not isinstance(data, dict):
+        raise ValueError('A JSON object is required.')
+    model_name = str(data.get('model_name', 'yolov8n')).strip().lower()
+    if not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', model_name):
+        raise ValueError('model_name may contain only lowercase letters, numbers, underscores, and hyphens.')
+    container = str(data.get('docker_container', DOCKER_DEFAULT_CONTAINER)).strip()
+    if not valid_docker_container_name(container):
+        raise ValueError('Invalid Docker container name.')
+    quantize = str(data.get('quantize', 'int8')).lower()
+    processor = str(data.get('processor', 'cv181x')).lower()
+    if quantize not in {'int8', 'bf16', 'f32'}:
+        raise ValueError('Unsupported quantization mode.')
+    if processor not in {'cv181x', 'cv180x', 'cv182x'}:
+        raise ValueError('Unsupported processor.')
+    tolerance = str(data.get('tolerance', '0.85,0.45')).strip()
+    if not re.fullmatch(r'(?:0(?:\.\d+)?|1(?:\.0+)?)\s*,\s*(?:0(?:\.\d+)?|1(?:\.0+)?)', tolerance):
+        raise ValueError('tolerance must contain two values between 0 and 1.')
+    model_file = data.get('model_file', '')
+    if model_file:
+        model_file = safe_filename(model_file, ALLOWED_EXTENSIONS)
+        if not model_file or not safe_path(UPLOAD_FOLDER, model_file, ALLOWED_EXTENSIONS).is_file():
+            raise ValueError('Uploaded model was not found.')
+    return {
+        'model_name': model_name,
+        'input_width': bounded_int(data.get('input_width', 640), 'input_width', 32, 2048),
+        'input_height': bounded_int(data.get('input_height', 640), 'input_height', 32, 2048),
+        'docker_container': container,
+        'calibration_count': bounded_int(data.get('calibration_count', 100), 'calibration_count', 1, 1000),
+        'quantize': quantize,
+        'processor': processor,
+        'tolerance': tolerance,
+        'model_file': model_file,
+    }
 
 
 def emit_docker_setup_status(task, progress=None, message=None, log_level=None):
@@ -537,17 +682,6 @@ def run_conversion_pipeline(job):
         job.status = 'running'
         emit_job_update(job)
 
-        # Clean up old models from outputs folder
-        if os.path.exists(OUTPUT_FOLDER):
-            for old_file in os.listdir(OUTPUT_FOLDER):
-                if old_file.endswith('.cvimodel'):
-                    old_path = os.path.join(OUTPUT_FOLDER, old_file)
-                    try:
-                        os.remove(old_path)
-                        emit_log(job, f'Removed old model: {old_file}')
-                    except Exception as e:
-                        emit_log(job, f'Warning: could not remove {old_file}: {e}', 'warning')
-
         config = job.config
         model_name = config.get('model_name', 'yolov8n')
         input_width = int(config.get('input_width', 640))
@@ -584,37 +718,87 @@ def run_conversion_pipeline(job):
             step_fail(job, 0, f'Docker container "{docker_container}" could not be set up. Check Docker installation.')
             return
 
-        # Check if tpu-mlir exists and is built
+        # Check actual build outputs. envsetup.sh exists immediately after clone
+        # and therefore must not be used as evidence of a completed build.
         emit_log(job, 'Checking tpu-mlir installation...')
         success, output = docker_exec(
             docker_container,
-            f'test -f {DOCKER_TPU_MLIR_PATH}/envsetup.sh && echo "EXISTS" || echo "NOT_FOUND"'
-        )
-        tpu_mlir_exists = 'EXISTS' in output
-
-        if not tpu_mlir_exists:
-            emit_log(job, 'tpu-mlir not found. Cloning and building (this may take a while)...', 'warning')
-            success, _ = docker_exec(
-                docker_container,
-                'git clone -b v1.7 --depth 1 https://github.com/sophgo/tpu-mlir.git /workspace/tpu-mlir',
-                cwd='/workspace',
-                job=job,
-                timeout=600
+            (
+                f'test -f {DOCKER_TPU_MLIR_PATH}/envsetup.sh '
+                f'&& test -f {DOCKER_TPU_MLIR_PATH}/install/python/tools/model_transform.py '
+                f'&& test -x {DOCKER_TPU_MLIR_PATH}/install/bin/tpuc-opt '
+                '&& echo "BUILD_READY" || echo "BUILD_REQUIRED"'
             )
-            if not success:
-                step_fail(job, 0, 'Failed to clone tpu-mlir repository.')
-                return
+        )
+        tpu_mlir_ready = 'BUILD_READY' in output
 
-            emit_log(job, 'Building tpu-mlir...')
+        if not tpu_mlir_ready:
+            # Killing a local `docker exec` client does not necessarily stop the
+            # command already running in the container. Reuse that build rather
+            # than starting a second Ninja process in the same build directory.
+            success, build_check = docker_exec(
+                docker_container,
+                "pgrep -f '[n]inja.*install|[c]make --build.*/workspace/tpu-mlir/build' "
+                '>/dev/null && echo "BUILD_RUNNING" || echo "BUILD_IDLE"'
+            )
+            if 'BUILD_RUNNING' in build_check:
+                emit_log(job, 'A tpu-mlir build is already running; waiting for it to finish...', 'warning')
+                success, _ = docker_exec(
+                    docker_container,
+                    (
+                        "while pgrep -f '[n]inja.*install|[c]make --build.*/workspace/tpu-mlir/build' "
+                        '>/dev/null; do sleep 10; done; '
+                        'test -f install/python/tools/model_transform.py '
+                        '&& test -x install/bin/tpuc-opt '
+                        f'&& touch {TPU_MLIR_BUILD_MARKER}'
+                    ),
+                    cwd=DOCKER_TPU_MLIR_PATH,
+                    job=job,
+                    timeout=TPU_MLIR_BUILD_TIMEOUT
+                )
+                if success:
+                    tpu_mlir_ready = True
+                    emit_log(job, 'Existing tpu-mlir build completed successfully.', 'success')
+
+        if not tpu_mlir_ready:
+            success, repo_check = docker_exec(
+                docker_container,
+                f'test -d {DOCKER_TPU_MLIR_PATH}/.git && echo "REPO_EXISTS" || echo "REPO_MISSING"'
+            )
+            if 'REPO_MISSING' in repo_check:
+                emit_log(job, 'tpu-mlir repository not found. Cloning it now...', 'warning')
+                success, _ = docker_exec(
+                    docker_container,
+                    f'git clone -b {TPU_MLIR_VERSION} --depth 1 https://github.com/sophgo/tpu-mlir.git {DOCKER_TPU_MLIR_PATH}',
+                    cwd='/workspace',
+                    job=job,
+                    timeout=600
+                )
+                if not success:
+                    step_fail(job, 0, 'Failed to clone tpu-mlir repository.')
+                    return
+            else:
+                emit_log(job, 'Found an incomplete tpu-mlir build; resuming it.', 'warning')
+
+            emit_log(job, f'Building tpu-mlir (timeout: {TPU_MLIR_BUILD_TIMEOUT}s)...')
             success, _ = docker_exec(
                 docker_container,
-                'source ./envsetup.sh && ./build.sh',
+                (
+                    'source ./envsetup.sh && ./build.sh '
+                    '&& test -f install/python/tools/model_transform.py '
+                    '&& test -x install/bin/tpuc-opt '
+                    f'&& touch {TPU_MLIR_BUILD_MARKER}'
+                ),
                 cwd=DOCKER_TPU_MLIR_PATH,
                 job=job,
-                timeout=1800  # 30 min timeout for build
+                timeout=TPU_MLIR_BUILD_TIMEOUT
             )
             if not success:
-                step_fail(job, 0, 'Failed to build tpu-mlir.')
+                step_fail(
+                    job,
+                    0,
+                    'Failed to build tpu-mlir. The partial build was kept and will be resumed on the next run.'
+                )
                 return
         else:
             emit_log(job, 'tpu-mlir is installed.', 'success')
@@ -656,8 +840,8 @@ def run_conversion_pipeline(job):
 
         # If user uploaded a .pt file, copy it into the container
         if model_file:
-            host_pt_path = os.path.join(UPLOAD_FOLDER, model_file)
-            if os.path.exists(host_pt_path):
+            host_pt_path = safe_path(UPLOAD_FOLDER, model_file, ALLOWED_EXTENSIONS)
+            if host_pt_path and host_pt_path.is_file():
                 emit_log(job, f'Copying uploaded model {model_file} to container...')
                 if not docker_copy_to(docker_container, host_pt_path, f'{workspace_dir}/{model_file}'):
                     step_fail(job, 1, f'Failed to copy {model_file} to container.')
@@ -844,14 +1028,23 @@ model.export(format='onnx', opset=11, imgsz=input_size, simplify=False)
         # ================================================================
         # STEP 3: Calibration
         # ================================================================
-        step_start(job, 3, f'[Step 4/5] Running calibration ({calibration_count} images)...')
+        effective_calibration_count = min(calibration_count, TPU_MLIR_SAFE_CALIBRATION_IMAGES)
+        step_start(job, 3, f'[Step 4/5] Running calibration ({effective_calibration_count} images)...')
+        if effective_calibration_count != calibration_count:
+            emit_log(
+                job,
+                f'Reduced calibration set from {calibration_count} to {effective_calibration_count} images '
+                'to avoid a known TPU-MLIR v1.7 native collector crash.',
+                'warning'
+            )
 
         calib_cmd = (
             f'{tpu_env_cmd} && '
             f'{cmd_run_calibration} '
             f'{model_name}.mlir '
             f'--dataset ../COCO2017 '
-            f'--input_num {calibration_count} '
+            f'--input_num {effective_calibration_count} '
+            f'--tune_num 0 '
             f'-o {model_name}_calib_table'
         )
 
@@ -866,6 +1059,14 @@ model.export(format='onnx', opset=11, imgsz=input_size, simplify=False)
             step_fail(job, 3, 'Calibration failed.')
             return
 
+        success, check = docker_exec(
+            docker_container,
+            f'test -s {workspace_dir}/{model_name}_calib_table && echo "OK" || echo "FAIL"'
+        )
+        if 'FAIL' in check:
+            step_fail(job, 3, 'Calibration command finished without producing a valid table.')
+            return
+
         # Verify calibration table
         success, check = docker_exec(
             docker_container,
@@ -875,7 +1076,7 @@ model.export(format='onnx', opset=11, imgsz=input_size, simplify=False)
             step_fail(job, 3, f'{model_name}_calib_table was not created.')
             return
 
-        step_done(job, 3, f'Calibration complete ({calibration_count} images)')
+        step_done(job, 3, f'Calibration complete ({effective_calibration_count} images)')
 
         if job.status == 'failed':
             return
@@ -921,7 +1122,7 @@ model.export(format='onnx', opset=11, imgsz=input_size, simplify=False)
             return
 
         # Copy .cvimodel from container to host outputs folder
-        host_output_path = os.path.join(OUTPUT_FOLDER, f'{job.job_id}_{output_model_name}')
+        host_output_path = OUTPUT_FOLDER / f'{job.job_id}_{output_model_name}'
         emit_log(job, f'Copying {output_model_name} to host...')
         if docker_copy_from(docker_container, f'{workspace_dir}/{output_model_name}', host_output_path):
             job.output_model = host_output_path
@@ -930,10 +1131,6 @@ model.export(format='onnx', opset=11, imgsz=input_size, simplify=False)
             emit_log(job, 'Warning: Could not copy model to host. Model is still in container.', 'warning')
 
         step_done(job, 4, f'Generated {output_model_name} ({quantize.upper()}, {processor})')
-
-        # Set output_model to the filename for frontend download
-        if not job.output_model:
-            job.output_model = output_model_name
 
         if job.status == 'failed':
             return
@@ -1078,13 +1275,14 @@ def upload_file():
         return jsonify({'error': 'No file selected'}), 400
 
     if file and allowed_file(file.filename):
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        filename = safe_filename(file.filename, ALLOWED_EXTENSIONS)
+        filepath = safe_path(UPLOAD_FOLDER, filename, ALLOWED_EXTENSIONS)
+        if filepath.exists():
+            return api_error('A file with this name already exists. Rename it before uploading.', 409)
         file.save(filepath)
         return jsonify({
             'filename': filename,
-            'size': os.path.getsize(filepath),
-            'path': filepath
+            'size': filepath.stat().st_size,
         })
     else:
         return jsonify({'error': 'Only .pt files are allowed'}), 400
@@ -1093,15 +1291,22 @@ def upload_file():
 # ---- Jobs ----
 @app.route('/api/jobs', methods=['GET'])
 def list_jobs():
-    return jsonify([j.to_dict() for j in jobs.values()])
+    with jobs_lock:
+        return jsonify([j.to_dict() for j in jobs.values()])
 
 
 @app.route('/api/jobs', methods=['POST'])
 def create_job():
-    config = request.json
-    job_id = str(uuid.uuid4())[:8]
-    job = ConversionJob(job_id, config)
-    jobs[job_id] = job
+    try:
+        config = validate_conversion_config(request_data())
+    except ValueError as exc:
+        return api_error(str(exc))
+    with jobs_lock:
+        if any(job.status in {'pending', 'running'} for job in jobs.values()):
+            return api_error('A conversion job is already running. Wait for it to finish or cancel it first.', 409)
+        job_id = str(uuid.uuid4())[:8]
+        job = ConversionJob(job_id, config)
+        jobs[job_id] = job
 
     # Start pipeline in background thread
     thread = threading.Thread(target=run_conversion_pipeline, args=(job,), daemon=True)
@@ -1112,7 +1317,8 @@ def create_job():
 
 @app.route('/api/jobs/<job_id>', methods=['GET'])
 def get_job(job_id):
-    job = jobs.get(job_id)
+    with jobs_lock:
+        job = jobs.get(job_id)
     if not job:
         return jsonify({'error': 'Job not found'}), 404
     return jsonify(job.to_dict())
@@ -1120,11 +1326,12 @@ def get_job(job_id):
 
 @app.route('/api/jobs/<job_id>/cancel', methods=['POST'])
 def cancel_job(job_id):
-    job = jobs.get(job_id)
+    with jobs_lock:
+        job = jobs.get(job_id)
     if not job:
         return jsonify({'error': 'Job not found'}), 404
 
-    job.status = 'failed'
+    job.status = 'cancelled'
     # Kill running subprocess
     proc = running_processes.get(job_id)
     if proc:
@@ -1143,23 +1350,18 @@ def download_model(job_id):
     job = jobs.get(job_id)
     if not job:
         return jsonify({'error': 'Job not found'}), 404
-    if not job.output_model or not os.path.exists(job.output_model):
+    output_path = Path(job.output_model) if job.output_model else None
+    if not output_path or not output_path.is_file():
         return jsonify({'error': 'Output model not available'}), 404
 
     # Strip job_id prefix from filename for cleaner download name
-    raw_name = os.path.basename(job.output_model)
+    raw_name = output_path.name
     if raw_name.startswith(job_id + '_'):
         clean_name = raw_name[len(job_id) + 1:]
     else:
         clean_name = raw_name
 
-    with open(job.output_model, 'rb') as f:
-        data = f.read()
-    response = Response(data, mimetype='application/octet-stream')
-    response.headers['Content-Disposition'] = f'attachment; filename="{clean_name}"'
-    response.headers['Content-Length'] = len(data)
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    return response
+    return send_from_directory(OUTPUT_FOLDER, raw_name, as_attachment=True, download_name=clean_name, max_age=0)
 
 
 # ---- Direct file download (works after server restart) ----
@@ -1167,22 +1369,16 @@ def download_model(job_id):
 def download_model_file(filename):
     """Download a .cvimodel file directly from the outputs folder."""
     # Security: prevent path traversal
-    safe_name = os.path.basename(filename)
-    fpath = os.path.join(OUTPUT_FOLDER, safe_name)
-    if not os.path.exists(fpath):
+    safe_name = safe_filename(filename, ALLOWED_MODEL_EXTENSIONS)
+    fpath = safe_path(OUTPUT_FOLDER, safe_name, ALLOWED_MODEL_EXTENSIONS) if safe_name else None
+    if not fpath or not fpath.is_file():
         return jsonify({'error': 'File not found'}), 404
 
     # Strip job_id prefix for clean download name
     parts = safe_name.split('_', 1)
     clean_name = parts[1] if len(parts) > 1 else safe_name
 
-    with open(fpath, 'rb') as f:
-        data = f.read()
-    response = Response(data, mimetype='application/octet-stream')
-    response.headers['Content-Disposition'] = f'attachment; filename="{clean_name}"'
-    response.headers['Content-Length'] = len(data)
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    return response
+    return send_from_directory(OUTPUT_FOLDER, safe_name, as_attachment=True, download_name=clean_name, max_age=0)
 
 
 # ---- Available Models ----
@@ -1193,16 +1389,17 @@ def list_models():
     if os.path.exists(OUTPUT_FOLDER):
         for f in os.listdir(OUTPUT_FOLDER):
             if f.endswith('.cvimodel'):
-                fpath = os.path.join(OUTPUT_FOLDER, f)
+                fpath = safe_path(OUTPUT_FOLDER, f, ALLOWED_MODEL_EXTENSIONS)
+                if not fpath:
+                    continue
                 # Strip job_id prefix for display name
                 parts = f.split('_', 1)
                 display_name = parts[1] if len(parts) > 1 else f
                 models.append({
                     'filename': f,
                     'display_name': display_name,
-                    'path': fpath,
-                    'size': os.path.getsize(fpath),
-                    'modified': os.path.getmtime(fpath),
+                    'size': fpath.stat().st_size,
+                    'modified': fpath.stat().st_mtime,
                 })
     # Sort by modification time, newest first
     models.sort(key=lambda x: x['modified'], reverse=True)
@@ -1283,6 +1480,76 @@ def get_presets():
 inference_thread = None
 inference_running = False
 
+
+def validate_deploy_request(data):
+    if not isinstance(data, dict):
+        raise ValueError('A JSON object is required.')
+    ip = valid_ipv4(data.get('ip', '192.168.100.2'))
+    if not ip:
+        raise ValueError('A valid IPv4 device address is required.')
+    model_filename = safe_filename(data.get('model_filename'), ALLOWED_MODEL_EXTENSIONS)
+    model_path = safe_path(OUTPUT_FOLDER, model_filename, ALLOWED_MODEL_EXTENSIONS) if model_filename else None
+    if not model_path or not model_path.is_file():
+        raise ValueError('The selected .cvimodel file was not found.')
+    uart_dev = str(data.get('uartDev', '/dev/ttyS0')).strip()
+    if uart_dev and not re.fullmatch(r'/dev/ttyS[0-9]+', uart_dev):
+        raise ValueError('uartDev must be a /dev/ttyS<number> device.')
+    user = str(data.get('user', 'root')).strip()
+    if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', user):
+        raise ValueError('Invalid SSH username.')
+    password = data.get('password', 'root')
+    if not isinstance(password, str) or len(password) > 256:
+        raise ValueError('Invalid SSH password.')
+    inference_mode = str(data.get('inferenceMode', 'continuous')).strip().lower()
+    if inference_mode not in {'continuous', 'trigger', 'all'}:
+        raise ValueError('inferenceMode must be continuous, trigger, or all.')
+    trigger_source = str(data.get('triggerSource', 'ethernet')).strip().lower()
+    if trigger_source not in {'uart', 'ethernet', 'gpio'}:
+        raise ValueError('triggerSource must be uart, ethernet, or gpio.')
+    trigger_edge = str(data.get('triggerEdge', 'rising')).strip().lower()
+    if trigger_edge not in {'rising', 'falling', 'both'}:
+        raise ValueError('triggerEdge must be rising, falling, or both.')
+    output_transport = str(data.get('outputTransport', 'ethernet')).strip().lower()
+    if output_transport not in {'none', 'uart', 'ethernet', 'both'}:
+        raise ValueError('outputTransport must be none, uart, ethernet, or both.')
+    stream_output = data.get('streamOutput', True)
+    if not isinstance(stream_output, bool):
+        raise ValueError('streamOutput must be a boolean.')
+    no_yolo = data.get('noYolo', False)
+    if not isinstance(no_yolo, bool):
+        raise ValueError('noYolo must be a boolean.')
+    if no_yolo and inference_mode != 'continuous':
+        raise ValueError('Trigger and all modes require YOLO inference to be enabled.')
+    if (trigger_source == 'uart' or output_transport in {'uart', 'both'}) and not uart_dev:
+        raise ValueError('A UART device is required for the selected trigger/output transport.')
+    return {
+        'ip': ip,
+        'model_filename': model_filename,
+        'model_path': model_path,
+        'streamWidth': bounded_int(data.get('streamWidth', 640), 'streamWidth', 32, 1920),
+        'streamHeight': bounded_int(data.get('streamHeight', 480), 'streamHeight', 32, 1080),
+        'yoloW': bounded_int(data.get('yoloW', 320), 'yoloW', 32, 1280),
+        'yoloH': bounded_int(data.get('yoloH', 320), 'yoloH', 32, 1280),
+        'camWidth': bounded_int(data.get('camWidth', 640), 'camWidth', 32, 1920),
+        'camHeight': bounded_int(data.get('camHeight', 480), 'camHeight', 32, 1080),
+        'confThresh': bounded_float(data.get('confThresh', 0.5), 'confThresh', 0, 1),
+        'nmsThresh': bounded_float(data.get('nmsThresh', 0.5), 'nmsThresh', 0, 1),
+        'noYolo': no_yolo,
+        'jpegQuality': bounded_int(data.get('jpegQuality', 70), 'jpegQuality', 1, 100),
+        'uartDev': uart_dev,
+        'baudRate': bounded_int(data.get('baudRate', 115200), 'baudRate', 1200, 1000000),
+        'password': password,
+        'user': user,
+        'inferenceMode': inference_mode,
+        'streamOutput': stream_output,
+        'triggerSource': trigger_source,
+        'triggerPort': bounded_int(data.get('triggerPort', 8082), 'triggerPort', 1024, 65535),
+        'triggerGpio': bounded_int(data.get('triggerGpio', 502), 'triggerGpio', 0, 1024),
+        'triggerEdge': trigger_edge,
+        'outputTransport': output_transport,
+        'metadataPort': bounded_int(data.get('metadataPort', 8081), 'metadataPort', 1024, 65535),
+    }
+
 def udp_listener(ip):
     global inference_running
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1312,17 +1579,12 @@ def udp_listener(ip):
 def ping_device():
     """Ping a device to check if it's reachable."""
     import platform
-    import re
-
-    req = request.json
-    ip = req.get('ip', '').strip()
-
+    try:
+        ip = valid_ipv4(request_data().get('ip', ''))
+    except ValueError as exc:
+        return api_error(str(exc))
     if not ip:
-        return jsonify({'error': 'No IP provided', 'reachable': False}), 400
-
-    # Sanitize IP to prevent command injection
-    if not re.match(r'^[\d.]+$', ip):
-        return jsonify({'error': 'Invalid IP address', 'reachable': False}), 400
+        return jsonify({'error': 'A valid IPv4 address is required.', 'reachable': False}), 400
 
     try:
         # Platform-specific ping command
@@ -1370,30 +1632,25 @@ def ping_device():
 
 @app.route('/api/deploy', methods=['POST'])
 def deploy_to_device():
-    req = request.json
-    ip = req.get('ip', '192.168.100.2')
-    model_filename = req.get('model_filename')
-    streamWidth = req.get('streamWidth', 640)
-    streamHeight = req.get('streamHeight', 480)
-    yoloW = req.get('yoloW', 320)
-    yoloH = req.get('yoloH', 320)
-    camWidth = req.get('camWidth', 640)
-    camHeight = req.get('camHeight', 480)
-    confThresh = req.get('confThresh', 0.5)
-    nmsThresh = req.get('nmsThresh', 0.5)
-    noYolo = req.get('noYolo', False)
-    jpegQuality = req.get('jpegQuality', 70)
-    uartDev = req.get('uartDev', '/dev/ttyS0')
-    baudRate = req.get('baudRate', 115200)
-    password = req.get('password', '')
-    user = req.get('user', 'root')
-
-    model_path = os.path.join(OUTPUT_FOLDER, model_filename)
-    if not os.path.exists(model_path):
-        model_path = os.path.join(UPLOAD_FOLDER, model_filename)
-
-    if not os.path.exists(model_path):
-        return jsonify({'error': 'Model not found'}), 404
+    try:
+        req = validate_deploy_request(request_data())
+    except ValueError as exc:
+        return api_error(str(exc))
+    ip = req['ip']
+    model_filename = req['model_filename']
+    model_path = req['model_path']
+    streamWidth, streamHeight = req['streamWidth'], req['streamHeight']
+    yoloW, yoloH = req['yoloW'], req['yoloH']
+    camWidth, camHeight = req['camWidth'], req['camHeight']
+    confThresh, nmsThresh = req['confThresh'], req['nmsThresh']
+    noYolo, jpegQuality = req['noYolo'], req['jpegQuality']
+    uartDev, baudRate, password, user = req['uartDev'], req['baudRate'], req['password'], req['user']
+    inferenceMode, streamOutput = req['inferenceMode'], req['streamOutput']
+    triggerSource, triggerPort = req['triggerSource'], req['triggerPort']
+    triggerGpio, triggerEdge = req['triggerGpio'], req['triggerEdge']
+    outputTransport, metadataPort = req['outputTransport'], req['metadataPort']
+    if not deployment_lock.acquire(blocking=False):
+        return api_error('A deployment is already in progress.', 409)
 
     def emit_deploy_log(message, level='info'):
         entry = {'time': time.time(), 'message': message, 'level': level}
@@ -1428,8 +1685,7 @@ def deploy_to_device():
 
         try:
             emit_deploy_log(f'Connecting to {ip}...')
-            client = paramiko.SSHClient()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client = build_ssh_client()
             ckw = {'hostname': ip, 'port': 22, 'username': user, 'timeout': 10}
             if password != '':
                 ckw['password'] = password
@@ -1472,13 +1728,15 @@ def deploy_to_device():
             set_step(0, 'running')
             sz = os.path.getsize(model_path) / (1024 * 1024)
             emit_deploy_log(f'Uploading {remote_model_name} ({sz:.1f} MB)...')
-            sftp.put(model_path, f'/root/{remote_model_name}')
+            sftp.put(str(model_path), f'/root/{remote_model_name}')
             emit_deploy_log(f'Model uploaded to /root/{remote_model_name}', 'success')
             set_step(0, 'completed', f'{remote_model_name} ({sz:.1f} MB)')
 
             # Step 1: Upload Binary
             set_step(1, 'running')
-            bin_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deploy', 'Yolo_CSIStream')
+            bin_path = BASE_DIR / 'develop' / 'Projects' / 'OTGCamera' / 'build' / 'Yolo_CSIStream'
+            if not bin_path.is_file():
+                bin_path = BASE_DIR / 'deploy' / 'Yolo_CSIStream'
             if os.path.exists(bin_path):
                 bsz = os.path.getsize(bin_path) / (1024 * 1024)
                 emit_deploy_log(f'Uploading Yolo_CSIStream ({bsz:.1f} MB)...')
@@ -1502,9 +1760,21 @@ def deploy_to_device():
             args_list.append(f"--quality {jpegQuality}")
             args_list.append(f"--conf {confThresh}")
             args_list.append(f"--nms {nmsThresh}")
+            args_list.append(f"--mode {inferenceMode}")
+            args_list.append(f"--output {outputTransport}")
+            args_list.append(f"--metadata-port {metadataPort}")
+            if not streamOutput:
+                args_list.append("--no-stream")
+            if inferenceMode in {'trigger', 'all'}:
+                args_list.append(f"--trigger-source {triggerSource}")
+                if triggerSource == 'ethernet':
+                    args_list.append(f"--trigger-port {triggerPort}")
+                elif triggerSource == 'gpio':
+                    args_list.append(f"--trigger-gpio {triggerGpio}")
+                    args_list.append(f"--trigger-edge {triggerEdge}")
             if noYolo:
                 args_list.append("--no-yolo")
-            if uartDev:
+            if uartDev and (triggerSource == 'uart' or outputTransport in {'uart', 'both'}):
                 args_list.append(f"--uart {uartDev}")
                 args_list.append(f"--baud {baudRate}")
             
@@ -1542,10 +1812,7 @@ case "$1" in
 esac
 exit 0
 """
-            lp = os.path.join(OUTPUT_FOLDER, "S99yolocam")
-            with open(lp, "w", newline='\n') as f:
-                f.write(script)
-            sftp.put(lp, '/etc/init.d/S99yolocam')
+            sftp.putfo(io.BytesIO(script.encode('utf-8')), '/etc/init.d/S99yolocam')
             emit_deploy_log('Boot script uploaded to /etc/init.d/S99yolocam', 'success')
             set_step(2, 'completed', 'S99yolocam')
 
@@ -1584,6 +1851,8 @@ exit 0
                     set_step(i, 'failed', msg)
                     break
             socketio.emit('deploy_complete', {'status': 'failed', 'error': msg}, namespace='/')
+        finally:
+            deployment_lock.release()
 
     threading.Thread(target=deploy_worker, daemon=True).start()
     return jsonify({'status': 'deploying'})
@@ -1628,9 +1897,15 @@ def get_serial_ports():
 @app.route('/api/serial/connect', methods=['POST'])
 def connect_serial():
     global serial_port_obj, serial_running, serial_thread
-    req = request.json
-    port = req.get('port')
-    baudrate = int(req.get('baudrate', 115200))
+    try:
+        req = request_data()
+        port = str(req.get('port', ''))
+        baudrate = bounded_int(req.get('baudrate', 115200), 'baudrate', 1200, 1000000)
+    except ValueError as exc:
+        return api_error(str(exc))
+    available_ports = {p.device for p in serial.tools.list_ports.comports()}
+    if port not in available_ports:
+        return api_error('Selected serial port is not available.')
     
     if serial_port_obj and serial_port_obj.is_open:
         serial_running = False
@@ -1659,8 +1934,12 @@ def disconnect_serial():
 @app.route('/api/serial/write', methods=['POST'])
 def write_serial():
     global serial_port_obj
-    req = request.json
-    text = req.get('text', '')
+    try:
+        text = request_data().get('text', '')
+    except ValueError as exc:
+        return api_error(str(exc))
+    if not isinstance(text, str) or len(text) > 4096:
+        return api_error('Serial message must be text no longer than 4096 characters.')
     if serial_port_obj and serial_port_obj.is_open:
         try:
             serial_port_obj.write((text + '\r\n').encode('utf-8'))
@@ -1708,11 +1987,18 @@ def ssh_connect():
     except ImportError:
         return jsonify({'error': 'paramiko not installed. Run: pip install paramiko'}), 500
 
-    req = request.json
-    host = req.get('host', '192.168.100.2')
-    user = req.get('user', 'root')
-    password = req.get('password', '')
-    port = int(req.get('port', 22))
+    try:
+        req = request_data()
+        host = valid_ipv4(req.get('host', '192.168.100.2'))
+        user = str(req.get('user', 'root')).strip()
+        password = req.get('password', 'root')
+        port = bounded_int(req.get('port', 22), 'port', 1, 65535)
+    except ValueError as exc:
+        return api_error(str(exc))
+    if not host or not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', user):
+        return api_error('A valid IPv4 host and SSH username are required.')
+    if not isinstance(password, str) or len(password) > 256:
+        return api_error('Invalid SSH password.')
 
     # Close existing session
     if ssh_client:
@@ -1727,8 +2013,7 @@ def ssh_connect():
         ssh_channel = None
 
     try:
-        ssh_client = paramiko.SSHClient()
-        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh_client = build_ssh_client()
 
         connect_kwargs = {'hostname': host, 'port': port, 'username': user, 'timeout': 10}
         if password != '':
@@ -1752,7 +2037,7 @@ def ssh_connect():
     except Exception as e:
         ssh_client = None
         ssh_channel = None
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': f'SSH connection failed. Add the device host key to {SSH_KNOWN_HOSTS} and verify credentials.'}), 400
 
 @app.route('/api/ssh/disconnect', methods=['POST'])
 def ssh_disconnect():
@@ -1775,8 +2060,12 @@ def ssh_disconnect():
 @app.route('/api/ssh/write', methods=['POST'])
 def ssh_write():
     global ssh_channel
-    req = request.json
-    text = req.get('text', '')
+    try:
+        text = request_data().get('text', '')
+    except ValueError as exc:
+        return api_error(str(exc))
+    if not isinstance(text, str) or len(text) > 4096:
+        return api_error('SSH command must be text no longer than 4096 characters.')
     if ssh_channel:
         try:
             ssh_channel.send(text + '\n')
@@ -1791,13 +2080,17 @@ def ssh_write():
 # ============================================================
 @socketio.on('connect')
 def handle_connect():
+    if API_TOKEN:
+        provided = request.args.get('token', '')
+        if not secrets.compare_digest(provided, API_TOKEN):
+            return False
     print('Client connected')
     emit('connected', {'status': 'ok'})
 
 @socketio.on('start_inference')
 def handle_start_inference(data):
     global inference_running, inference_thread
-    ip = data.get('ip')
+    ip = valid_ipv4((data or {}).get('ip'))
     if ip and not inference_running:
         inference_running = True
         inference_thread = threading.Thread(target=udp_listener, args=(ip,), daemon=True)
@@ -1807,6 +2100,35 @@ def handle_start_inference(data):
 def handle_stop_inference(data):
     global inference_running
     inference_running = False
+
+
+@app.route('/api/inference/trigger', methods=['POST'])
+def send_inference_trigger():
+    """Relay a manual UI trigger to the board's Ethernet trigger input."""
+    try:
+        data = request_data()
+        ip = valid_ipv4(data.get('ip', '192.168.100.2'))
+        port = bounded_int(data.get('port', 8082), 'port', 1024, 65535)
+    except ValueError as exc:
+        return api_error(str(exc))
+    if not ip:
+        return api_error('A valid IPv4 device address is required.')
+
+    payload = b'TRIGGER\n'
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as trigger_socket:
+            sent = trigger_socket.sendto(payload, (ip, port))
+    except OSError:
+        return api_error('Could not send the Ethernet trigger to the device.', 502)
+
+    return jsonify({
+        'status': 'sent',
+        'ip': ip,
+        'port': port,
+        'bytes': sent,
+        'sent_at': int(time.time() * 1000),
+    })
+
 
 @app.route('/api/stream_proxy')
 def stream_proxy():
@@ -1921,4 +2243,7 @@ if __name__ == '__main__':
     print('   LaiLab Nano V1 - AI Edge Inference Platform')
     print('   http://localhost:5000')
     print('═' * 60)
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)
+    host = os.getenv('LAI_LAB_HOST', '127.0.0.1')
+    port = bounded_int(os.getenv('LAI_LAB_PORT', '5000'), 'LAI_LAB_PORT', 1, 65535)
+    debug = os.getenv('LAI_LAB_DEBUG', '').lower() in {'1', 'true', 'yes'}
+    socketio.run(app, host=host, port=port, debug=debug, allow_unsafe_werkzeug=debug)

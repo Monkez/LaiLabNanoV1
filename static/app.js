@@ -5,6 +5,18 @@
    ============================================================ */
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Optional API token for an explicitly network-exposed installation.
+    // Set once in the browser console: localStorage.setItem('lailab_api_token', '...')
+    const apiToken = localStorage.getItem('lailab_api_token') || '';
+    if (apiToken) {
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = (input, init = {}) => {
+            const headers = new Headers(init.headers || {});
+            headers.set('X-Api-Token', apiToken);
+            return nativeFetch(input, { ...init, headers });
+        };
+    }
+
     // ---- Theme ----
     const savedTheme = localStorage.getItem('lailab_theme') || 'dark';
     document.documentElement.setAttribute('data-theme', savedTheme);
@@ -33,10 +45,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const connectionStatus = document.getElementById('connectionStatus');
     let activeDockerSetupTask = null;
     let dockerSetupPollTimer = null;
+    const triggerResultHistory = [];
+    const TRIGGER_HISTORY_LIMIT = 100;
+    let triggerResultCursor = -1;
 
     function connectWebSocket() {
         socket = io(window.location.origin, {
-            transports: ['websocket', 'polling']
+            transports: ['websocket', 'polling'],
+            query: apiToken ? { token: apiToken } : {}
         });
 
         socket.on('connect', () => {
@@ -101,6 +117,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         socket.on('inference_meta', (data) => {
             drawInferenceOverlay(data);
+            if (data?.triggered === true) recordTriggerResult(data);
             
             yoloFrames++;
             const now = Date.now();
@@ -437,6 +454,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const presetSelect = document.getElementById('presetSelect');
 
     async function loadPresets() {
+        if (!presetSelect) return;
         try {
             const res = await fetch('/api/config/presets');
             const presets = await res.json();
@@ -874,8 +892,74 @@ document.addEventListener('DOMContentLoaded', () => {
     const deployFileRemove = document.getElementById('deployFileRemove');
     const btnDeploy = document.getElementById('btnDeploy');
     const btnPingDevice = document.getElementById('btnPingDevice');
+    const deployPage = document.getElementById('page-deploy');
+    const configLevelButtons = document.querySelectorAll('.config-level-btn');
+    const inferenceModeInputs = document.querySelectorAll('input[name="inferenceMode"]');
+    const triggerSourceSelect = document.getElementById('triggerSource');
+    const outputTransportSelect = document.getElementById('outputTransport');
 
     let currentDeployModel = null; // { filename, display_name, size }
+
+    function setConfigLevel(level) {
+        const advanced = level === 'advanced';
+        deployPage?.classList.toggle('config-basic', !advanced);
+        deployPage?.classList.toggle('config-advanced', advanced);
+        configLevelButtons.forEach(button => {
+            const active = button.dataset.configLevel === level;
+            button.classList.toggle('active', active);
+            button.setAttribute('aria-pressed', String(active));
+        });
+    }
+
+    configLevelButtons.forEach(button => {
+        button.addEventListener('click', () => setConfigLevel(button.dataset.configLevel || 'basic'));
+    });
+    setConfigLevel('basic');
+
+    function selectedInferenceMode() {
+        return document.querySelector('input[name="inferenceMode"]:checked')?.value || 'continuous';
+    }
+
+    function syncRuntimeOptions() {
+        const mode = selectedInferenceMode();
+        const triggerSource = triggerSourceSelect?.value || 'ethernet';
+        const outputTransport = outputTransportSelect?.value || 'ethernet';
+        const triggerEnabled = mode === 'trigger' || mode === 'all';
+
+        document.querySelectorAll('.runtime-mode-option').forEach(option => {
+            option.classList.toggle('active', option.querySelector('input')?.checked === true);
+        });
+        document.querySelectorAll('.trigger-only-field').forEach(el => el.classList.toggle('hidden', !triggerEnabled));
+        document.querySelectorAll('.trigger-ethernet-field').forEach(el => {
+            el.classList.toggle('hidden', !triggerEnabled || triggerSource !== 'ethernet');
+        });
+        document.querySelectorAll('.trigger-gpio-field').forEach(el => {
+            el.classList.toggle('hidden', !triggerEnabled || triggerSource !== 'gpio');
+        });
+        document.querySelectorAll('.output-ethernet-field').forEach(el => {
+            el.classList.toggle('hidden', outputTransport !== 'ethernet' && outputTransport !== 'both');
+        });
+
+        const noYoloInput = document.getElementById('noYolo');
+        if (noYoloInput) {
+            noYoloInput.disabled = mode !== 'continuous';
+            if (mode !== 'continuous') noYoloInput.checked = false;
+        }
+
+        const help = document.getElementById('runtimeModeHelp');
+        if (help) {
+            help.textContent = mode === 'continuous'
+                ? 'Continuous mode drops stale inference frames and always processes the newest frame for minimum latency.'
+                : mode === 'trigger'
+                    ? 'Trigger mode queues at most 3 capture requests. Further triggers are rejected and reported as dropped to keep latency bounded.'
+                    : 'All mode keeps continuous throughput; queued triggers are correlated with the next inference results without duplicating TPU work.';
+        }
+    }
+
+    inferenceModeInputs.forEach(input => input.addEventListener('change', syncRuntimeOptions));
+    triggerSourceSelect?.addEventListener('change', syncRuntimeOptions);
+    outputTransportSelect?.addEventListener('change', syncRuntimeOptions);
+    syncRuntimeOptions();
 
     // Deploy file upload
     if (deployFileDrop && deployFileInput) {
@@ -1024,9 +1108,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const jpegQuality = document.getElementById('jpegQuality')?.value || 70;
             const uartDev = document.getElementById('uartDev')?.value || '/dev/ttyS0';
             const baudRate = document.getElementById('baudRate')?.value || 115200;
+            const inferenceMode = selectedInferenceMode();
+            const streamOutput = document.getElementById('streamOutputEnabled')?.checked ?? true;
+            const triggerSource = triggerSourceSelect?.value || 'ethernet';
+            const triggerPort = document.getElementById('triggerPort')?.value || 8082;
+            const triggerGpio = document.getElementById('triggerGpio')?.value || 502;
+            const triggerEdge = document.getElementById('triggerEdge')?.value || 'rising';
+            const outputTransport = outputTransportSelect?.value || 'ethernet';
+            const metadataPort = document.getElementById('metadataPort')?.value || 8081;
             
             // Get password from SSH password field (shared with deploy)
-            const password = document.getElementById('sshPassword')?.value || '';
+            const password = document.getElementById('sshPassword')?.value ?? 'root';
             const user = document.getElementById('sshUser')?.value?.trim() || 'root';
             
             let modelFilename = currentDeployModel ? currentDeployModel.filename : null;
@@ -1051,7 +1143,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     body: JSON.stringify({ 
                         ip, model_filename: modelFilename, streamWidth, streamHeight, yoloW, yoloH, 
                         password, user,
-                        camWidth, camHeight, confThresh, nmsThresh, noYolo, jpegQuality, uartDev, baudRate
+                        camWidth, camHeight, confThresh, nmsThresh, noYolo, jpegQuality, uartDev, baudRate,
+                        inferenceMode, streamOutput, triggerSource, triggerPort, triggerGpio, triggerEdge,
+                        outputTransport, metadataPort
                     })
                 });
                 
@@ -1095,8 +1189,131 @@ document.addEventListener('DOMContentLoaded', () => {
     const mjpegStream = document.getElementById('mjpegStream');
     const noStreamOverlay = document.getElementById('noStreamOverlay');
     const yoloOverlay = document.getElementById('yoloOverlay');
+    const btnTriggerInference = document.getElementById('btnTriggerInference');
+    const inferenceTriggerPort = document.getElementById('inferenceTriggerPort');
+    const triggerSendStatus = document.getElementById('triggerSendStatus');
+    const btnTriggerPrev = document.getElementById('btnTriggerPrev');
+    const btnTriggerNext = document.getElementById('btnTriggerNext');
+    const btnTriggerClear = document.getElementById('btnTriggerClear');
+    const triggerResultIndex = document.getElementById('triggerResultIndex');
+    const triggerResultEmpty = document.getElementById('triggerResultEmpty');
+    const triggerResultView = document.getElementById('triggerResultView');
+    const triggerResultId = document.getElementById('triggerResultId');
+    const triggerResultSeq = document.getElementById('triggerResultSeq');
+    const triggerResultLatency = document.getElementById('triggerResultLatency');
+    const triggerResultObjects = document.getElementById('triggerResultObjects');
+    const triggerResultDetections = document.getElementById('triggerResultDetections');
     let inferenceActive = false;
     let inferenceMetaTimer = null;
+
+    function currentLanguage() {
+        return localStorage.getItem('lailab_lang') || 'en';
+    }
+
+    function setTriggerSendStatus(message, state = '') {
+        if (!triggerSendStatus) return;
+        triggerSendStatus.textContent = message;
+        triggerSendStatus.className = `trigger-send-status${state ? ` ${state}` : ''}`;
+    }
+
+    function renderTriggerResult() {
+        const total = triggerResultHistory.length;
+        if (triggerResultIndex) {
+            triggerResultIndex.textContent = total ? `${triggerResultCursor + 1} / ${total}` : '0 / 0';
+        }
+        if (btnTriggerPrev) btnTriggerPrev.disabled = total === 0 || triggerResultCursor <= 0;
+        if (btnTriggerNext) btnTriggerNext.disabled = total === 0 || triggerResultCursor >= total - 1;
+        if (btnTriggerClear) btnTriggerClear.disabled = total === 0;
+
+        const result = total ? triggerResultHistory[triggerResultCursor] : null;
+        triggerResultEmpty?.classList.toggle('hidden', Boolean(result));
+        triggerResultView?.classList.toggle('hidden', !result);
+        if (!result) return;
+
+        const objects = Array.isArray(result.objs) ? result.objs : [];
+        if (triggerResultId) triggerResultId.textContent = result.trigger_id ? `#${result.trigger_id}` : '--';
+        if (triggerResultSeq) triggerResultSeq.textContent = result.seq ?? '--';
+        if (triggerResultLatency) {
+            triggerResultLatency.textContent = Number.isFinite(Number(result.trigger_latency_us))
+                ? `${(Number(result.trigger_latency_us) / 1000).toFixed(1)} ms`
+                : '--';
+        }
+        if (triggerResultObjects) triggerResultObjects.textContent = objects.length;
+
+        if (triggerResultDetections) {
+            triggerResultDetections.innerHTML = '';
+            if (objects.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'trigger-detection-row';
+                empty.textContent = currentLanguage() === 'vi' ? 'Không phát hiện đối tượng' : 'No objects detected';
+                triggerResultDetections.appendChild(empty);
+            } else {
+                objects.slice(0, 20).forEach((obj, index) => {
+                    const row = document.createElement('div');
+                    row.className = 'trigger-detection-row';
+                    const score = Number.isFinite(Number(obj.s)) ? `${Math.round(Number(obj.s) * 100)}%` : '--';
+                    row.textContent = `${index + 1}. C${obj.c ?? '?'} ${score} · x${Math.round(Number(obj.x) || 0)} y${Math.round(Number(obj.y) || 0)} w${Math.round(Number(obj.w) || 0)} h${Math.round(Number(obj.h) || 0)}`;
+                    triggerResultDetections.appendChild(row);
+                });
+            }
+        }
+    }
+
+    function recordTriggerResult(data) {
+        triggerResultHistory.push({ ...data, objs: Array.isArray(data.objs) ? data.objs.map(obj => ({ ...obj })) : [] });
+        if (triggerResultHistory.length > TRIGGER_HISTORY_LIMIT) triggerResultHistory.shift();
+        triggerResultCursor = triggerResultHistory.length - 1;
+        renderTriggerResult();
+        const label = currentLanguage() === 'vi' ? 'Đã nhận kết quả' : 'Result received';
+        setTriggerSendStatus(`${label} #${data.trigger_id ?? data.seq ?? triggerResultHistory.length}`, 'success');
+    }
+
+    btnTriggerPrev?.addEventListener('click', () => {
+        if (triggerResultCursor <= 0) return;
+        triggerResultCursor--;
+        renderTriggerResult();
+    });
+
+    btnTriggerNext?.addEventListener('click', () => {
+        if (triggerResultCursor >= triggerResultHistory.length - 1) return;
+        triggerResultCursor++;
+        renderTriggerResult();
+    });
+
+    btnTriggerClear?.addEventListener('click', () => {
+        triggerResultHistory.length = 0;
+        triggerResultCursor = -1;
+        renderTriggerResult();
+    });
+
+    btnTriggerInference?.addEventListener('click', async () => {
+        if (!inferenceActive) return;
+        const ip = inferenceDeviceIp?.value.trim();
+        const port = Number(inferenceTriggerPort?.value || 8082);
+        if (!ip || !Number.isInteger(port) || port < 1024 || port > 65535) {
+            setTriggerSendStatus(currentLanguage() === 'vi' ? 'IP hoặc port không hợp lệ' : 'Invalid IP or port', 'error');
+            return;
+        }
+
+        btnTriggerInference.disabled = true;
+        setTriggerSendStatus(currentLanguage() === 'vi' ? 'Đang gửi...' : 'Sending...', 'pending');
+        try {
+            const response = await fetch('/api/inference/trigger', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ip, port }),
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || 'Trigger failed');
+            setTriggerSendStatus(currentLanguage() === 'vi' ? 'Đã gửi · đang chờ kết quả' : 'Sent · waiting for result', 'pending');
+        } catch (error) {
+            setTriggerSendStatus(error.message || 'Trigger failed', 'error');
+        } finally {
+            btnTriggerInference.disabled = !inferenceActive;
+        }
+    });
+
+    renderTriggerResult();
 
     if (btnConnectInference) {
         btnConnectInference.addEventListener('click', () => {
@@ -1112,6 +1329,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 mjpegStream.src = `/api/stream_proxy?ip=${ip}&t=` + Date.now();
                 mjpegStream.style.display = 'block';
                 noStreamOverlay.style.display = 'none';
+                if (btnTriggerInference) btnTriggerInference.disabled = false;
+                if (inferenceTriggerPort && document.getElementById('triggerPort')?.value) {
+                    inferenceTriggerPort.value = document.getElementById('triggerPort').value;
+                }
+                setTriggerSendStatus(currentLanguage() === 'vi' ? 'Sẵn sàng gửi trigger' : 'Ready to trigger');
                 
                 // Tell backend to start listening for UDP metrics from this IP
                 socket.emit('start_inference', { ip: ip });
@@ -1124,6 +1346,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 mjpegStream.src = '';
                 mjpegStream.style.display = 'none';
                 noStreamOverlay.style.display = 'flex';
+                if (btnTriggerInference) btnTriggerInference.disabled = true;
+                setTriggerSendStatus(currentLanguage() === 'vi' ? 'Kết nối dữ liệu để trigger' : 'Connect data to trigger');
                 
                 if (yoloOverlay) {
                     const ctx = yoloOverlay.getContext('2d');
@@ -1535,7 +1759,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btnSshConnect.addEventListener('click', async () => {
             const host = document.getElementById('deployDeviceIp')?.value.trim();
             const user = document.getElementById('sshUser')?.value.trim() || 'root';
-            const password = document.getElementById('sshPassword')?.value || '';
+            const password = document.getElementById('sshPassword')?.value ?? 'root';
 
             if (!host) return;
 

@@ -54,6 +54,29 @@ bash scripts/build.sh
 
 Transfer the resulting `Yolo_CSIStream` binary to your board.
 
+## Memory and resolution limits
+
+The LicheeRV Nano used by this project reports 128 MB RAM with no swap. The
+runtime accepts camera/stream resolutions up to **1920x1080**, but decides at
+startup whether a requested configuration is safe. It estimates all Video Buffer
+pools, caps them at 64 MiB, and reserves at least 32 MiB of current
+`MemAvailable` for the kernel, CVI runtime, model, and network buffers.
+
+For example, 1080p with YOLO 640 needs roughly 50 MiB of VB pools and is allowed
+when the board has sufficient free memory. The MJPEG path keeps only the newest
+JPEG in memory (maximum 1 MiB); it drops an oversized frame rather than allocating
+without limit or increasing latency.
+
+Recommended starting point for inference:
+
+```bash
+./Yolo_CSIStream yolo11n_320.cvimodel --cam 1080x720 --stream 640x480 --yolo 320 --quality 70
+```
+
+When a camera is attached, start with 1080x720, then test 1280x720 and 1920x1080
+only when the printed `VB pool estimate` passes. Record capture/stream FPS, YOLO
+FPS, `Skip`, and `JpegDrop` counters before raising resolution or JPEG quality.
+
 ## Usage
 
 Run the executable on the LicheeRV Nano:

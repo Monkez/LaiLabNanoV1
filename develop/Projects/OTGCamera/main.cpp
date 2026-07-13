@@ -40,8 +40,12 @@
 #include <sched.h>
 #include <time.h>
 #include <termios.h>  // UART serial
+#include <poll.h>
+#include <errno.h>
 #include <iostream>
 #include <vector>
+#include <deque>
+#include <string>
 #include <atomic>
 
 // --- CVI HEADERS ---
@@ -54,7 +58,12 @@
 #include "cvi_tdl_media.h"
 
 // --- CONFIG ---
-#define CAM_DEV "/dev/video0"
+#define DEFAULT_CAM_DEV "/dev/video0"
+#define MAX_CAM_WIDTH  1920
+#define MAX_CAM_HEIGHT 1080
+#define MAX_VB_CAP_BYTES (64 * 1024 * 1024)
+#define SYSTEM_HEADROOM_BYTES (32 * 1024 * 1024)
+#define MAX_JPEG_BYTES (1024 * 1024)
 
 // Configurable resolutions (set from command-line)
 static int g_cam_w     = 640;
@@ -67,9 +76,27 @@ static int g_jpeg_quality = 70;    // Lower default for faster encoding
 static float g_conf_thresh = 0.5f;
 static float g_nms_thresh  = 0.5f;
 static bool g_no_yolo  = false;    // Stream-only mode (no YOLO)
-static bool g_use_userptr = false; // Set true if V4L2 USERPTR is supported
+static bool g_args_valid = true;
+static bool g_dry_run = false;     // Validate memory admission without opening camera
+static char g_camera_dev[64] = DEFAULT_CAM_DEV;
+static bool g_camera_dev_explicit = false;
+static bool g_use_userptr = false;
+static bool g_allow_userptr = false; // Experimental: camera/VPSS ownership differs by UVC driver
 static const char* g_uart_dev = NULL;  // UART device path (NULL = disabled)
 static int g_uart_baud = 115200;       // UART baudrate
+
+enum InferenceMode { MODE_CONTINUOUS, MODE_TRIGGER, MODE_ALL };
+enum TriggerSource { TRIGGER_UART, TRIGGER_ETHERNET, TRIGGER_GPIO };
+enum OutputTransport { OUTPUT_NONE = 0, OUTPUT_UART = 1, OUTPUT_ETHERNET = 2 };
+
+static InferenceMode g_inference_mode = MODE_CONTINUOUS;
+static TriggerSource g_trigger_source = TRIGGER_ETHERNET;
+static int g_output_transport = OUTPUT_ETHERNET;
+static bool g_stream_enabled = true;
+static int g_trigger_port = 8082;
+static int g_metadata_port = 8081;
+static int g_trigger_gpio = 502;
+static char g_trigger_edge[16] = "rising";
 
 #define BUF_CNT 4           // V4L2 camera buffers (4 is enough with fast processing)
 #define VB_POOL_CNT 4       // VB input cache blocks (reduced - 4 is sufficient)
@@ -87,7 +114,7 @@ static int g_uart_baud = 115200;       // UART baudrate
 
 // HTTP Stream
 #define STREAM_PORT 8080
-#define METADATA_PORT 8081
+#define TRIGGER_QUEUE_CAPACITY 3
 
 // --- YOLO PARAMS ---
 #define MODEL_SCALE 1.0 
@@ -117,10 +144,12 @@ struct CamBuf {
 static CamBuf cam_bufs[BUF_CNT];
 static VPSS_GRP vpss_grp = 0;
 static std::atomic<int> running(1);
+static volatile sig_atomic_t stop_requested = 0;
 
 // Computed sizes (set in main after parsing args)
 static int g_cam_frame_size    = 0;  // cam_stride * cam_h
 static int g_cam_stride        = 0;  // aligned stride for YUYV
+static int g_v4l2_stride       = 0;  // source stride reported by V4L2
 static int g_yolo_frame_size   = 0;
 static int g_stream_nv12_size  = 0;
 
@@ -139,14 +168,28 @@ static sockaddr_in metadata_broadcast_addr;
 
 // UART serial output for YOLO detections
 static int g_uart_fd = -1;
+static pthread_mutex_t uart_write_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+struct TriggerEvent {
+    uint64_t id;
+    uint64_t received_us;
+};
+
+static std::deque<TriggerEvent> trigger_queue;
+static pthread_mutex_t trigger_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t trigger_cond = PTHREAD_COND_INITIALIZER;
+static std::atomic<uint64_t> trigger_sequence(0);
+static std::atomic<unsigned int> trigger_drop_cnt(0);
+static std::atomic<unsigned int> result_sequence(0);
+static bool trigger_gpio_exported = false;
 
 // --- External LED Control ---
-// Status LED on A24 (GPIOA24 = Linux GPIO 503) - Always ON when running OK
-#define STATUS_LED_GPIO "503"
+// Status LED on A24 (GPIOA24 = Linux GPIO 504) - Always ON when running OK
+#define STATUS_LED_GPIO "504"
 #define STATUS_LED_PATH "/sys/class/gpio/gpio" STATUS_LED_GPIO
 
-// YOLO Detection LED on A23 (GPIOA23 = Linux GPIO 504) - ON when objects detected
-#define DETECT_LED_GPIO "504"
+// YOLO Detection LED on A23 (GPIOA23 = Linux GPIO 503) - ON when objects detected
+#define DETECT_LED_GPIO "503"
 #define DETECT_LED_PATH "/sys/class/gpio/gpio" DETECT_LED_GPIO
 
 #define GPIO_EXPORT   "/sys/class/gpio/export"
@@ -291,7 +334,7 @@ static speed_t baud_to_speed(int baud) {
 int uart_init() {
     if (!g_uart_dev) return 0;  // UART not enabled
     
-    g_uart_fd = open(g_uart_dev, O_WRONLY | O_NOCTTY | O_NONBLOCK);
+    g_uart_fd = open(g_uart_dev, O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (g_uart_fd < 0) {
         printf("[UART] ERROR: Cannot open %s\n", g_uart_dev);
         return -1;
@@ -325,7 +368,7 @@ int uart_init() {
     tty.c_iflag = 0;          // No input processing
     
     tcsetattr(g_uart_fd, TCSANOW, &tty);
-    tcflush(g_uart_fd, TCOFLUSH);
+    tcflush(g_uart_fd, TCIOFLUSH);
     
     printf("[UART] Initialized: %s @ %d baud (8N1)\n", g_uart_dev, g_uart_baud);
     return 0;
@@ -373,7 +416,7 @@ void uart_send_detections(const cvtdl_object_t* obj_meta) {
 
     for (int i = 0; i < max_objs; i++) {
         const cvtdl_object_info_t* info = &obj_meta->info[i];
-        
+
         // Scale coordinates back to original camera resolution
         int x1 = (int)(info->bbox.x1 * scale_x);
         int y1 = (int)(info->bbox.y1 * scale_y);
@@ -406,13 +449,152 @@ void uart_send_detections(const cvtdl_object_t* obj_meta) {
  */
 void uart_cleanup() {
     if (g_uart_fd >= 0) {
-        // Send goodbye message
-        const char* bye = "$YOLO,0,0*00\r\n";
-        write(g_uart_fd, bye, strlen(bye));
+        if (g_output_transport & OUTPUT_UART) {
+            const char* bye = "{\"type\":\"status\",\"state\":\"stopped\"}\r\n";
+            write(g_uart_fd, bye, strlen(bye));
+        }
         close(g_uart_fd);
         g_uart_fd = -1;
         printf("[UART] Closed\n");
     }
+}
+
+static uint64_t realtime_us() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec * 1000000ULL + tv.tv_usec;
+}
+
+static bool enqueue_trigger() {
+    TriggerEvent event;
+    event.id = trigger_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+    event.received_us = realtime_us();
+
+    pthread_mutex_lock(&trigger_mutex);
+    if (trigger_queue.size() >= TRIGGER_QUEUE_CAPACITY) {
+        pthread_mutex_unlock(&trigger_mutex);
+        trigger_drop_cnt.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    trigger_queue.push_back(event);
+    pthread_cond_signal(&trigger_cond);
+    pthread_mutex_unlock(&trigger_mutex);
+    return true;
+}
+
+static bool pop_trigger(TriggerEvent* event, unsigned int* depth_after_pop) {
+    bool found = false;
+    pthread_mutex_lock(&trigger_mutex);
+    if (!trigger_queue.empty()) {
+        *event = trigger_queue.front();
+        trigger_queue.pop_front();
+        found = true;
+    }
+    if (depth_after_pop) *depth_after_pop = (unsigned int)trigger_queue.size();
+    pthread_mutex_unlock(&trigger_mutex);
+    return found;
+}
+
+static void* trigger_input_thread(void* arg) {
+    (void)arg;
+    printf("[Trigger] Input thread started (queue capacity=%d)\n", TRIGGER_QUEUE_CAPACITY);
+
+    if (g_trigger_source == TRIGGER_ETHERNET) {
+        int sock = socket(AF_INET, SOCK_DGRAM, 0);
+        if (sock < 0) {
+            printf("[Trigger] ERROR: cannot create UDP socket\n");
+            return NULL;
+        }
+        int reuse = 1;
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = INADDR_ANY;
+        addr.sin_port = htons(g_trigger_port);
+        if (bind(sock, (sockaddr*)&addr, sizeof(addr)) < 0) {
+            printf("[Trigger] ERROR: cannot bind UDP port %d\n", g_trigger_port);
+            close(sock);
+            return NULL;
+        }
+        printf("[Trigger] Ethernet UDP listening on port %d\n", g_trigger_port);
+        while (running) {
+            struct pollfd pfd = {sock, POLLIN, 0};
+            int ready = poll(&pfd, 1, 250);
+            if (ready > 0 && (pfd.revents & POLLIN)) {
+                char payload[128];
+                if (recvfrom(sock, payload, sizeof(payload), 0, NULL, NULL) > 0 && !enqueue_trigger()) {
+                    printf("[Trigger] Queue full; Ethernet trigger dropped\n");
+                }
+            }
+        }
+        close(sock);
+    } else if (g_trigger_source == TRIGGER_UART) {
+        printf("[Trigger] UART listening on %s; send TRIGGER followed by newline\n", g_uart_dev);
+        char line[64];
+        size_t used = 0;
+        while (running) {
+            struct pollfd pfd = {g_uart_fd, POLLIN, 0};
+            int ready = poll(&pfd, 1, 250);
+            if (ready <= 0 || !(pfd.revents & POLLIN)) continue;
+            char bytes[32];
+            ssize_t count = read(g_uart_fd, bytes, sizeof(bytes));
+            for (ssize_t i = 0; i < count; i++) {
+                const char ch = bytes[i];
+                if (ch == '\r' || ch == '\n') {
+                    line[used] = '\0';
+                    if (used > 0 && (strcmp(line, "TRIGGER") == 0 || strcmp(line, "T") == 0)) {
+                        if (!enqueue_trigger()) printf("[Trigger] Queue full; UART trigger dropped\n");
+                    }
+                    used = 0;
+                } else if (used + 1 < sizeof(line)) {
+                    line[used++] = ch;
+                } else {
+                    used = 0;
+                }
+            }
+        }
+    } else {
+        char gpio_number[16];
+        char gpio_path[96];
+        snprintf(gpio_number, sizeof(gpio_number), "%d", g_trigger_gpio);
+        snprintf(gpio_path, sizeof(gpio_path), "/sys/class/gpio/gpio%d", g_trigger_gpio);
+        if (access(gpio_path, F_OK) != 0) {
+            if (sysfs_write(GPIO_EXPORT, gpio_number) == 0) trigger_gpio_exported = true;
+            usleep(100000);
+        }
+        char direction_path[128], edge_path[128], value_path[128];
+        snprintf(direction_path, sizeof(direction_path), "%s/direction", gpio_path);
+        snprintf(edge_path, sizeof(edge_path), "%s/edge", gpio_path);
+        snprintf(value_path, sizeof(value_path), "%s/value", gpio_path);
+        sysfs_write(direction_path, "in");
+        sysfs_write(edge_path, g_trigger_edge);
+        int fd = open(value_path, O_RDONLY | O_NONBLOCK);
+        if (fd < 0) {
+            printf("[Trigger] ERROR: cannot open GPIO %d\n", g_trigger_gpio);
+            return NULL;
+        }
+        char value;
+        lseek(fd, 0, SEEK_SET);
+        read(fd, &value, 1);
+        printf("[Trigger] GPIO %d edge=%s\n", g_trigger_gpio, g_trigger_edge);
+        while (running) {
+            struct pollfd pfd = {fd, POLLPRI | POLLERR, 0};
+            int ready = poll(&pfd, 1, 250);
+            if (ready > 0 && (pfd.revents & (POLLPRI | POLLERR))) {
+                lseek(fd, 0, SEEK_SET);
+                read(fd, &value, 1);
+                if (!enqueue_trigger()) printf("[Trigger] Queue full; GPIO trigger dropped\n");
+            }
+        }
+        close(fd);
+        if (trigger_gpio_exported) {
+            sysfs_write(GPIO_UNEXPORT, gpio_number);
+            trigger_gpio_exported = false;
+        }
+    }
+    printf("[Trigger] Input thread stopped\n");
+    return NULL;
 }
 static VENC_PACK_S g_venc_pack[8];
 
@@ -420,14 +602,21 @@ static VENC_PACK_S g_venc_pack[8];
 static pthread_t jpeg_send_thread_id;
 static pthread_mutex_t jpeg_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  jpeg_cond  = PTHREAD_COND_INITIALIZER;
-static void* g_jpeg_buf = NULL;    // Double-buffered JPEG data
+static uint8_t* g_jpeg_buf = NULL; // Latest JPEG only: intentional bounded-memory policy
 static int   g_jpeg_size = 0;
+static size_t g_jpeg_capacity = 0;
 static bool  g_jpeg_ready = false;
+static std::atomic<unsigned int> jpeg_drop_cnt(0);
 
 // Atomic counters for parallel YOLO thread
 static std::atomic<int> yolo_frame_cnt(0);
 static std::atomic<int> yolo_object_cnt(0);
 static std::atomic<int> stream_frame_cnt(0);
+static std::atomic<unsigned int> capture_total(0);
+static std::atomic<unsigned int> vpss_send_fail_cnt(0);
+static std::atomic<unsigned int> stream_get_fail_cnt(0);
+static std::atomic<unsigned int> venc_send_fail_cnt(0);
+static std::atomic<unsigned int> venc_get_fail_cnt(0);
 
 // --- Monotonic clock for accurate timing (no NTP jumps) ---
 static inline double get_monotonic_time() {
@@ -443,12 +632,23 @@ void print_usage(const char* progname) {
     printf("Usage: %s <model.cvimodel> [options]\n", progname);
     printf("\nOptions:\n");
     printf("  --cam WxH        Camera capture resolution (default: 640x480)\n");
+    printf("  --device DEV     V4L2 device (default: auto-detect from /dev/video0)\n");
+    printf("  --userptr        Enable experimental V4L2 USERPTR zero-copy path\n");
     printf("  --stream WxH     Stream output resolution  (default: same as cam)\n");
     printf("  --yolo N         YOLO input size NxN        (default: 640)\n");
     printf("  --quality Q      JPEG quality 1-100         (default: 70)\n");
     printf("  --conf T         YOLO confidence threshold  (default: 0.5)\n");
     printf("  --nms T          YOLO NMS threshold         (default: 0.5)\n");
     printf("  --no-yolo        Stream-only mode (no YOLO detection)\n");
+    printf("  --mode MODE      continuous, trigger, or all (default: continuous)\n");
+    printf("  --no-stream      Disable MJPEG/HTTP output and its VPSS/VENC work\n");
+    printf("  --trigger-source SRC  uart, ethernet, or gpio (default: ethernet)\n");
+    printf("  --trigger-port N UDP trigger port (default: 8082)\n");
+    printf("  --trigger-gpio N Linux sysfs GPIO number (default: 502)\n");
+    printf("  --trigger-edge E rising, falling, or both (default: rising)\n");
+    printf("  --output DEST    none, uart, ethernet, or both (default: ethernet)\n");
+    printf("  --metadata-port N Detection JSON UDP port (default: 8081)\n");
+    printf("  --dry-run        Print memory admission result without opening camera\n");
     printf("  --uart DEV       Send YOLO output via UART (e.g. /dev/ttyS0)\n");
     printf("  --baud RATE      UART baudrate (default: 115200)\n");
     printf("\nExamples:\n");
@@ -478,6 +678,7 @@ const char* parse_args(int argc, char* argv[]) {
     if (argc < 2) {
         // Check if --no-yolo is the only argument
         print_usage(argv[0]);
+        g_args_valid = false;
         return NULL;
     }
     
@@ -496,6 +697,7 @@ const char* parse_args(int argc, char* argv[]) {
         if (strcmp(argv[i], "--cam") == 0 && i + 1 < argc) {
             if (parse_resolution(argv[++i], &g_cam_w, &g_cam_h) != 0) {
                 printf("[ERROR] Invalid --cam format: %s (use WxH, e.g. 640x480)\n", argv[i]);
+                g_args_valid = false;
                 return NULL;
             }
             // If stream resolution was not explicitly set, follow camera resolution
@@ -503,9 +705,21 @@ const char* parse_args(int argc, char* argv[]) {
                 g_stream_w = g_cam_w;
                 g_stream_h = g_cam_h;
             }
+        } else if (strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
+            const char* device = argv[++i];
+            if (strncmp(device, "/dev/video", 10) != 0 || strlen(device) >= sizeof(g_camera_dev)) {
+                printf("[ERROR] --device must be a /dev/videoN path\n");
+                g_args_valid = false;
+                return NULL;
+            }
+            snprintf(g_camera_dev, sizeof(g_camera_dev), "%s", device);
+            g_camera_dev_explicit = true;
+        } else if (strcmp(argv[i], "--userptr") == 0) {
+            g_allow_userptr = true;
         } else if (strcmp(argv[i], "--stream") == 0 && i + 1 < argc) {
             if (parse_resolution(argv[++i], &g_stream_w, &g_stream_h) != 0) {
                 printf("[ERROR] Invalid --stream format: %s (use WxH, e.g. 640x480)\n", argv[i]);
+                g_args_valid = false;
                 return NULL;
             }
             stream_res_set = true;
@@ -520,52 +734,193 @@ const char* parse_args(int argc, char* argv[]) {
             g_nms_thresh = atof(argv[++i]);
         } else if (strcmp(argv[i], "--no-yolo") == 0) {
             g_no_yolo = true;
+        } else if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
+            const char* mode = argv[++i];
+            if (strcmp(mode, "continuous") == 0) g_inference_mode = MODE_CONTINUOUS;
+            else if (strcmp(mode, "trigger") == 0) g_inference_mode = MODE_TRIGGER;
+            else if (strcmp(mode, "all") == 0) g_inference_mode = MODE_ALL;
+            else {
+                printf("[ERROR] --mode must be continuous, trigger, or all\n");
+                g_args_valid = false;
+                return NULL;
+            }
+        } else if (strcmp(argv[i], "--no-stream") == 0) {
+            g_stream_enabled = false;
+        } else if (strcmp(argv[i], "--trigger-source") == 0 && i + 1 < argc) {
+            const char* source = argv[++i];
+            if (strcmp(source, "uart") == 0) g_trigger_source = TRIGGER_UART;
+            else if (strcmp(source, "ethernet") == 0) g_trigger_source = TRIGGER_ETHERNET;
+            else if (strcmp(source, "gpio") == 0) g_trigger_source = TRIGGER_GPIO;
+            else {
+                printf("[ERROR] --trigger-source must be uart, ethernet, or gpio\n");
+                g_args_valid = false;
+                return NULL;
+            }
+        } else if (strcmp(argv[i], "--trigger-port") == 0 && i + 1 < argc) {
+            g_trigger_port = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--trigger-gpio") == 0 && i + 1 < argc) {
+            g_trigger_gpio = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--trigger-edge") == 0 && i + 1 < argc) {
+            const char* edge = argv[++i];
+            if (strcmp(edge, "rising") != 0 && strcmp(edge, "falling") != 0 && strcmp(edge, "both") != 0) {
+                printf("[ERROR] --trigger-edge must be rising, falling, or both\n");
+                g_args_valid = false;
+                return NULL;
+            }
+            snprintf(g_trigger_edge, sizeof(g_trigger_edge), "%s", edge);
+        } else if (strcmp(argv[i], "--output") == 0 && i + 1 < argc) {
+            const char* output = argv[++i];
+            if (strcmp(output, "none") == 0) g_output_transport = OUTPUT_NONE;
+            else if (strcmp(output, "uart") == 0) g_output_transport = OUTPUT_UART;
+            else if (strcmp(output, "ethernet") == 0) g_output_transport = OUTPUT_ETHERNET;
+            else if (strcmp(output, "both") == 0) g_output_transport = OUTPUT_UART | OUTPUT_ETHERNET;
+            else {
+                printf("[ERROR] --output must be none, uart, ethernet, or both\n");
+                g_args_valid = false;
+                return NULL;
+            }
+        } else if (strcmp(argv[i], "--metadata-port") == 0 && i + 1 < argc) {
+            g_metadata_port = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--dry-run") == 0) {
+            g_dry_run = true;
         } else if (strcmp(argv[i], "--uart") == 0 && i + 1 < argc) {
             g_uart_dev = argv[++i];
         } else if (strcmp(argv[i], "--baud") == 0 && i + 1 < argc) {
             g_uart_baud = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
+            g_args_valid = false;
             return NULL;
         } else {
             printf("[ERROR] Unknown option: %s\n", argv[i]);
             print_usage(argv[0]);
+            g_args_valid = false;
             return NULL;
         }
     }
     
     // Validate resolutions
-    if (g_cam_w < 160 || g_cam_w > 1920 || g_cam_h < 120 || g_cam_h > 1080) {
-        printf("[ERROR] Camera resolution %dx%d out of range (160-1920 x 120-1080)\n", g_cam_w, g_cam_h);
+    if (g_cam_w < 160 || g_cam_w > MAX_CAM_WIDTH || g_cam_h < 120 || g_cam_h > MAX_CAM_HEIGHT) {
+        printf("[ERROR] Camera resolution %dx%d out of supported range (160-%d x 120-%d)\n",
+               g_cam_w, g_cam_h, MAX_CAM_WIDTH, MAX_CAM_HEIGHT);
+        g_args_valid = false;
         return NULL;
     }
-    if (g_stream_w < 160 || g_stream_w > 1920 || g_stream_h < 120 || g_stream_h > 1080) {
-        printf("[ERROR] Stream resolution %dx%d out of range (160-1920 x 120-1080)\n", g_stream_w, g_stream_h);
+    if (g_stream_w < 160 || g_stream_w > MAX_CAM_WIDTH || g_stream_h < 120 || g_stream_h > MAX_CAM_HEIGHT) {
+        printf("[ERROR] Stream resolution %dx%d out of supported range (160-%d x 120-%d)\n",
+               g_stream_w, g_stream_h, MAX_CAM_WIDTH, MAX_CAM_HEIGHT);
+        g_args_valid = false;
         return NULL;
     }
     if (g_stream_w > g_cam_w || g_stream_h > g_cam_h) {
         printf("[ERROR] Stream resolution %dx%d cannot exceed camera resolution %dx%d\n", 
                g_stream_w, g_stream_h, g_cam_w, g_cam_h);
+        g_args_valid = false;
         return NULL;
     }
     if (g_yolo_w < 128 || g_yolo_w > 1024 || (g_yolo_w % 32) != 0) {
         printf("[ERROR] YOLO size %d must be 128-1024 and multiple of 32\n", g_yolo_w);
+        g_args_valid = false;
         return NULL;
     }
     if (g_jpeg_quality < 1 || g_jpeg_quality > 100) {
         printf("[ERROR] JPEG quality %d must be 1-100\n", g_jpeg_quality);
+        g_args_valid = false;
         return NULL;
     }
     if (g_conf_thresh < 0.01f || g_conf_thresh > 1.0f) {
         printf("[ERROR] Confidence threshold %.2f must be 0.01-1.0\n", g_conf_thresh);
+        g_args_valid = false;
         return NULL;
     }
     if (g_nms_thresh < 0.01f || g_nms_thresh > 1.0f) {
         printf("[ERROR] NMS threshold %.2f must be 0.01-1.0\n", g_nms_thresh);
+        g_args_valid = false;
+        return NULL;
+    }
+    if (g_trigger_port < 1024 || g_trigger_port > 65535 ||
+        g_metadata_port < 1024 || g_metadata_port > 65535) {
+        printf("[ERROR] Trigger/metadata ports must be in range 1024-65535\n");
+        g_args_valid = false;
+        return NULL;
+    }
+    if (g_trigger_gpio < 0 || g_trigger_gpio > 1024) {
+        printf("[ERROR] Trigger GPIO must be in range 0-1024\n");
+        g_args_valid = false;
+        return NULL;
+    }
+    if (g_no_yolo && g_inference_mode != MODE_CONTINUOUS) {
+        printf("[ERROR] Trigger/all modes require YOLO inference\n");
+        g_args_valid = false;
+        return NULL;
+    }
+    const bool uart_needed =
+        ((g_inference_mode != MODE_CONTINUOUS) && g_trigger_source == TRIGGER_UART) ||
+        ((g_output_transport & OUTPUT_UART) != 0);
+    if (uart_needed && !g_uart_dev) {
+        printf("[ERROR] --uart DEV is required for UART trigger/output\n");
+        g_args_valid = false;
         return NULL;
     }
     
     return model_path;
+}
+
+static size_t estimate_vb_bytes() {
+    // Mirrors sys_vb_init pool counts; excludes SDK and process heap overhead.
+    size_t input = (size_t)g_cam_frame_size * VB_POOL_CNT;
+    size_t yolo = g_no_yolo ? 0 : (size_t)g_yolo_frame_size * 4;
+    size_t stream = g_stream_enabled ? (size_t)g_stream_nv12_size * 3 : 0;
+    size_t venc = g_stream_enabled ? (size_t)g_stream_nv12_size * 2 * 3 : 0;
+    return input + yolo + stream + venc;
+}
+
+static size_t get_mem_available_bytes() {
+    FILE* fp = fopen("/proc/meminfo", "r");
+    if (!fp) return 0;
+    char key[64];
+    unsigned long kib = 0;
+    char unit[16];
+    size_t available = 0;
+    while (fscanf(fp, "%63s %lu %15s", key, &kib, unit) == 3) {
+        if (strcmp(key, "MemAvailable:") == 0) {
+            available = (size_t)kib * 1024;
+            break;
+        }
+    }
+    fclose(fp);
+    return available;
+}
+
+static size_t get_vb_budget_bytes() {
+    size_t available = get_mem_available_bytes();
+    if (available == 0) return MAX_VB_CAP_BYTES;
+    if (available <= SYSTEM_HEADROOM_BYTES) return 0;
+    size_t dynamic_budget = available - SYSTEM_HEADROOM_BYTES;
+    return dynamic_budget < MAX_VB_CAP_BYTES ? dynamic_budget : MAX_VB_CAP_BYTES;
+}
+
+static int dry_run_memory_admission() {
+    g_cam_stride = align_up(g_cam_w * 2, STRIDE_ALIGN);
+    g_cam_frame_size = g_cam_stride * g_cam_h;
+    int yolo_plane_stride = align_up(g_yolo_w, STRIDE_ALIGN);
+    g_yolo_frame_size = yolo_plane_stride * g_yolo_h * 3;
+    int stream_y_stride = align_up(g_stream_w, STRIDE_ALIGN);
+    g_stream_nv12_size = stream_y_stride * g_stream_h * 3 / 2;
+    size_t vb_bytes = estimate_vb_bytes();
+    size_t mem_available = get_mem_available_bytes();
+    size_t vb_budget = get_vb_budget_bytes();
+    printf("[DRY-RUN] cam=%dx%d stream=%dx%d yolo=%dx%d\n",
+           g_cam_w, g_cam_h, g_stream_w, g_stream_h, g_yolo_w, g_yolo_h);
+    printf("[DRY-RUN] VB estimate %.1f MiB; budget %.1f MiB; MemAvailable %.1f MiB\n",
+           vb_bytes / (1024.0 * 1024.0), vb_budget / (1024.0 * 1024.0),
+           mem_available / (1024.0 * 1024.0));
+    if (vb_bytes > vb_budget) {
+        printf("[DRY-RUN] REJECTED: lower resolution or YOLO input size.\n");
+        return -1;
+    }
+    printf("[DRY-RUN] ACCEPTED\n");
+    return 0;
 }
 
 /**
@@ -638,10 +993,10 @@ int init_metadata_socket() {
 
     memset(&metadata_broadcast_addr, 0, sizeof(metadata_broadcast_addr));
     metadata_broadcast_addr.sin_family = AF_INET;
-    metadata_broadcast_addr.sin_port = htons(METADATA_PORT);
+    metadata_broadcast_addr.sin_port = htons(g_metadata_port);
     metadata_broadcast_addr.sin_addr.s_addr = inet_addr(bcast_ip.c_str());
     
-    printf("[META] UDP metadata broadcast on port %d (Target: %s)\n", METADATA_PORT, bcast_ip.c_str());
+    printf("[META] UDP metadata broadcast on port %d (Target: %s)\n", g_metadata_port, bcast_ip.c_str());
     return 0;
 }
 
@@ -649,8 +1004,10 @@ int init_metadata_socket() {
  * @brief Gửi YOLO detection results qua UDP (JSON format)
  * Includes stream and yolo resolution info for proper coordinate mapping
  */
-void send_yolo_metadata(const cvtdl_object_t* obj_meta) {
-    if (metadata_socket < 0) return;
+void send_yolo_metadata(const cvtdl_object_t* obj_meta, uint64_t capture_us,
+                        uint64_t inference_done_us, const TriggerEvent* trigger,
+                        unsigned int queue_depth) {
+    if (g_output_transport == OUTPUT_NONE) return;
     
     char json[2048];
     int pos = 0;
@@ -659,10 +1016,34 @@ void send_yolo_metadata(const cvtdl_object_t* obj_meta) {
     gettimeofday(&tv, NULL);
     uint64_t ts_ms = tv.tv_sec * 1000ULL + tv.tv_usec / 1000;
     
-    // Include resolution info so Python client can scale coordinates
+    const uint64_t inference_us = inference_done_us >= capture_us
+        ? inference_done_us - capture_us : 0;
+    const uint64_t trigger_latency_us = trigger && inference_done_us >= trigger->received_us
+        ? inference_done_us - trigger->received_us : 0;
+    const char* mode_name = g_inference_mode == MODE_CONTINUOUS ? "continuous" :
+        (g_inference_mode == MODE_TRIGGER ? "trigger" : "all");
+    const unsigned int seq = result_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+
+    // Include resolution and timing info. capture_us/done_us use the board's
+    // CLOCK_REALTIME; inference_us remains valid even when that clock is not
+    // synchronized with the browser host.
     pos += snprintf(json + pos, sizeof(json) - pos, 
-        "{\"ts\":%llu,\"cnt\":%u,\"yw\":%d,\"yh\":%d,\"sw\":%d,\"sh\":%d,\"objs\":[", 
-        (unsigned long long)ts_ms, obj_meta->size,
+        "{\"type\":\"inference\",\"mode\":\"%s\",\"seq\":%u,\"triggered\":%s,"
+        "\"trigger_id\":%llu,\"trigger_latency_us\":%llu,\"queue_depth\":%u,"
+        "\"trigger_dropped\":%u,\"ts\":%llu,\"capture_us\":%llu,\"done_us\":%llu,"
+        "\"inference_us\":%llu,\"cnt\":%u,\"yw\":%d,\"yh\":%d,\"sw\":%d,\"sh\":%d,\"objs\":[",
+        mode_name,
+        seq,
+        trigger ? "true" : "false",
+        (unsigned long long)(trigger ? trigger->id : 0),
+        (unsigned long long)trigger_latency_us,
+        queue_depth,
+        trigger_drop_cnt.load(std::memory_order_relaxed),
+        (unsigned long long)ts_ms,
+        (unsigned long long)capture_us,
+        (unsigned long long)inference_done_us,
+        (unsigned long long)inference_us,
+        obj_meta->size,
         g_yolo_w, g_yolo_h, g_stream_w, g_stream_h);
     
     int max_objs = obj_meta->size > 20 ? 20 : obj_meta->size;
@@ -680,8 +1061,16 @@ void send_yolo_metadata(const cvtdl_object_t* obj_meta) {
     
     pos += snprintf(json + pos, sizeof(json) - pos, "]}");
     
-    sendto(metadata_socket, json, pos, MSG_DONTWAIT,
-           (sockaddr*)&metadata_broadcast_addr, sizeof(metadata_broadcast_addr));
+    if ((g_output_transport & OUTPUT_ETHERNET) && metadata_socket >= 0) {
+        sendto(metadata_socket, json, pos, MSG_DONTWAIT,
+               (sockaddr*)&metadata_broadcast_addr, sizeof(metadata_broadcast_addr));
+    }
+    if ((g_output_transport & OUTPUT_UART) && g_uart_fd >= 0) {
+        pthread_mutex_lock(&uart_write_mutex);
+        write(g_uart_fd, json, pos);
+        write(g_uart_fd, "\r\n", 2);
+        pthread_mutex_unlock(&uart_write_mutex);
+    }
 }
 
 /**
@@ -707,13 +1096,14 @@ int sys_vb_init() {
     vb.astCommPool[1].enRemapMode = VB_REMAP_MODE_CACHED;
 
     // Pool 2: Output Stream (NV12)
-    vb.astCommPool[2].u32BlkCnt  = 3;
+    // MJPEG input shares this NV12-sized pool with VDEC output frames.
+    vb.astCommPool[2].u32BlkCnt  = g_stream_enabled ? 3 : 0;
     vb.astCommPool[2].u32BlkSize = g_stream_nv12_size;
     vb.astCommPool[2].enRemapMode = VB_REMAP_MODE_CACHED;
 
     // Pool 3: VENC output buffer
     // JPEG output is typically smaller than raw, but need headroom
-    vb.astCommPool[3].u32BlkCnt  = 3;
+    vb.astCommPool[3].u32BlkCnt  = g_stream_enabled ? 3 : 0;
     vb.astCommPool[3].u32BlkSize = g_stream_nv12_size * 2;
     vb.astCommPool[3].enRemapMode = VB_REMAP_MODE_CACHED;
 
@@ -809,24 +1199,26 @@ int vpss_init() {
         printf("[VPSS] Channel 0 (YOLO): %dx%d RGB_888_PLANAR\n", g_yolo_w, g_yolo_h);
     }
 
-    // Channel 1: Stream (dynamic resolution, NV12)
-    VPSS_CHN_ATTR_S chn1_attr;
-    memset(&chn1_attr, 0, sizeof(chn1_attr));
-    chn1_attr.u32Width  = g_stream_w;
-    chn1_attr.u32Height = g_stream_h;
-    chn1_attr.enPixelFormat = PIXEL_FORMAT_NV12;
-    chn1_attr.u32Depth = 1;  // Minimal depth: we consume immediately
-    chn1_attr.bMirror = CVI_FALSE;
-    chn1_attr.bFlip   = CVI_FALSE;
-    chn1_attr.stAspectRatio.enMode = ASPECT_RATIO_NONE;
-    
-    ret = CVI_VPSS_SetChnAttr(vpss_grp, VPSS_CHN_STREAM, &chn1_attr);
-    if (ret != CVI_SUCCESS) {
-        printf("[ERROR] CVI_VPSS_SetChnAttr CHN1 failed: 0x%X\n", ret);
-        return -1;
+    if (g_stream_enabled) {
+        // Channel 1: Stream (dynamic resolution, NV12)
+        VPSS_CHN_ATTR_S chn1_attr;
+        memset(&chn1_attr, 0, sizeof(chn1_attr));
+        chn1_attr.u32Width  = g_stream_w;
+        chn1_attr.u32Height = g_stream_h;
+        chn1_attr.enPixelFormat = PIXEL_FORMAT_NV12;
+        chn1_attr.u32Depth = 1;  // Minimal depth: we consume immediately
+        chn1_attr.bMirror = CVI_FALSE;
+        chn1_attr.bFlip   = CVI_FALSE;
+        chn1_attr.stAspectRatio.enMode = ASPECT_RATIO_NONE;
+
+        ret = CVI_VPSS_SetChnAttr(vpss_grp, VPSS_CHN_STREAM, &chn1_attr);
+        if (ret != CVI_SUCCESS) {
+            printf("[ERROR] CVI_VPSS_SetChnAttr CHN1 failed: 0x%X\n", ret);
+            return -1;
+        }
+        CVI_VPSS_EnableChn(vpss_grp, VPSS_CHN_STREAM);
+        printf("[VPSS] Channel 1 (Stream): %dx%d NV12\n", g_stream_w, g_stream_h);
     }
-    CVI_VPSS_EnableChn(vpss_grp, VPSS_CHN_STREAM);
-    printf("[VPSS] Channel 1 (Stream): %dx%d NV12\n", g_stream_w, g_stream_h);
 
     ret = CVI_VPSS_StartGrp(vpss_grp);
     if (ret != CVI_SUCCESS) {
@@ -834,7 +1226,7 @@ int vpss_init() {
         return -1;
     }
     
-    printf("[VPSS] Group started with 2 channels\n");
+    printf("[VPSS] Group started (%s)\n", g_stream_enabled ? "YOLO + stream" : "YOLO only");
     return 0;
 }
 
@@ -890,9 +1282,31 @@ int venc_init() {
  * The fd is kept open for v4l2_start() to use later.
  */
 int v4l2_probe(int *fd) {
-    *fd = open(CAM_DEV, O_RDWR);
+    // USB cameras may re-enumerate as video1/video2 after reconnect. If the
+    // default node disappeared, choose the first capture-capable V4L2 device.
+    if (!g_camera_dev_explicit && access(g_camera_dev, F_OK) != 0) {
+        for (int index = 0; index < 10; index++) {
+            char candidate[64];
+            snprintf(candidate, sizeof(candidate), "/dev/video%d", index);
+            int probe_fd = open(candidate, O_RDWR | O_NONBLOCK);
+            if (probe_fd < 0) continue;
+            struct v4l2_capability cap;
+            memset(&cap, 0, sizeof(cap));
+            bool capture = ioctl(probe_fd, VIDIOC_QUERYCAP, &cap) == 0 &&
+                ((cap.capabilities & V4L2_CAP_VIDEO_CAPTURE) ||
+                 (cap.device_caps & V4L2_CAP_VIDEO_CAPTURE));
+            close(probe_fd);
+            if (capture) {
+                snprintf(g_camera_dev, sizeof(g_camera_dev), "%s", candidate);
+                printf("[V4L2] Auto-selected capture device %s\n", g_camera_dev);
+                break;
+            }
+        }
+    }
+
+    *fd = open(g_camera_dev, O_RDWR);
     if (*fd < 0) {
-        printf("[ERROR] Cannot open %s\n", CAM_DEV);
+        printf("[ERROR] Cannot open %s\n", g_camera_dev);
         return -1;
     }
     
@@ -913,6 +1327,7 @@ int v4l2_probe(int *fd) {
     // V4L2 driver may adjust the resolution - MUST use actual values
     int actual_w = (int)fmt.fmt.pix.width;
     int actual_h = (int)fmt.fmt.pix.height;
+    g_v4l2_stride = (int)fmt.fmt.pix.bytesperline;
     
     if (actual_w != g_cam_w || actual_h != g_cam_h) {
         printf("[WARN] Camera adjusted resolution: %dx%d -> %dx%d\n",
@@ -944,21 +1359,28 @@ int v4l2_probe(int *fd) {
         printf("[V4L2] Could not set framerate (driver may not support it)\n");
     }
     
-    // Probe USERPTR support for zero-copy
+    // Probe USERPTR support, but use MMAP + copy by default. Some UVC drivers
+    // reuse a USERPTR buffer before VPSS has finished consuming it, which causes
+    // a reproducible stall after the initial V4L2 buffer set.
     struct v4l2_requestbuffers probe_req;
     memset(&probe_req, 0, sizeof(probe_req));
     probe_req.count = 1;
     probe_req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     probe_req.memory = V4L2_MEMORY_USERPTR;
     if (ioctl(*fd, VIDIOC_REQBUFS, &probe_req) == 0) {
-        g_use_userptr = true;
-        printf("[V4L2] USERPTR mode supported -> zero-copy enabled\n");
+        g_use_userptr = g_allow_userptr;
+        printf("[V4L2] USERPTR supported -> %s\n",
+               g_use_userptr ? "experimental zero-copy enabled" : "using safe MMAP + copy");
     } else {
         g_use_userptr = false;
-        printf("[V4L2] USERPTR not supported -> using MMAP + memcpy\n");
+        printf("[V4L2] USERPTR not supported -> using safe MMAP + copy\n");
     }
+    // A capability probe is stateful on several UVC drivers. Explicitly free
+    // its buffers before v4l2_start requests the selected MMAP/USERPTR mode.
+    probe_req.count = 0;
+    ioctl(*fd, VIDIOC_REQBUFS, &probe_req);
     
-    printf("[V4L2] Probed: %dx%d YUYV\n", g_cam_w, g_cam_h);
+    printf("[V4L2] Probed: %dx%d YUYV (bytesperline=%d)\n", g_cam_w, g_cam_h, g_v4l2_stride);
     return 0;
 }
 
@@ -1050,11 +1472,25 @@ int v4l2_start(int fd) {
  */
 static int jpeg_debug_cnt = 0;
 
+static bool send_all(int fd, const void* data, size_t length) {
+    const uint8_t* cursor = static_cast<const uint8_t*>(data);
+    while (length > 0) {
+        ssize_t sent = send(fd, cursor, length, MSG_NOSIGNAL);
+        if (sent > 0) {
+            cursor += sent;
+            length -= (size_t)sent;
+            continue;
+        }
+        if (sent < 0 && errno == EINTR) continue;
+        return false;
+    }
+    return true;
+}
+
 void* jpeg_send_thread_func(void* arg) {
     (void)arg;
-    // Allocate send buffer (max possible JPEG size)
-    int buf_capacity = 512 * 1024;  // 512KB should be enough for any JPEG
-    void* send_buf = malloc(buf_capacity);
+    uint8_t* send_buf = NULL;
+    size_t send_capacity = 0;
     int send_size = 0;
     
     while (running) {
@@ -1069,10 +1505,20 @@ void* jpeg_send_thread_func(void* arg) {
         }
         if (!running) { pthread_mutex_unlock(&jpeg_mutex); break; }
         
-        // Copy JPEG data to local buffer
-        if (g_jpeg_size <= buf_capacity && g_jpeg_buf) {
+        // Copy the latest JPEG to a private buffer before releasing jpeg_mutex.
+        send_size = 0;
+        if (g_jpeg_size > 0 && g_jpeg_buf) {
+            if ((size_t)g_jpeg_size > send_capacity) {
+                uint8_t* resized = (uint8_t*)realloc(send_buf, g_jpeg_size);
+                if (resized) {
+                    send_buf = resized;
+                    send_capacity = g_jpeg_size;
+                }
+            }
+            if (send_buf && (size_t)g_jpeg_size <= send_capacity) {
             memcpy(send_buf, g_jpeg_buf, g_jpeg_size);
             send_size = g_jpeg_size;
+            }
         }
         g_jpeg_ready = false;
         pthread_mutex_unlock(&jpeg_mutex);
@@ -1104,9 +1550,9 @@ void* jpeg_send_thread_func(void* arg) {
         int alive = 0;
         for (int i = 0; i < stream_client_count; i++) {
             int fd = stream_clients[i];
-            bool ok = send(fd, header, header_len, MSG_NOSIGNAL) >= 0 &&
-                      send(fd, send_buf, send_size, MSG_NOSIGNAL) >= 0 &&
-                      send(fd, "\r\n", 2, MSG_NOSIGNAL) >= 0;
+            bool ok = send_all(fd, header, header_len) &&
+                      send_all(fd, send_buf, send_size) &&
+                      send_all(fd, "\r\n", 2);
             if (ok) {
                 stream_clients[alive++] = fd;
             } else {
@@ -1126,17 +1572,39 @@ void* jpeg_send_thread_func(void* arg) {
  * @brief Queue JPEG data for async sending (non-blocking)
  * Called from main loop. Copies JPEG to shared buffer and signals send thread.
  */
-void queue_jpeg_for_send(void *jpeg_data, int jpeg_size) {
+void queue_jpeg_packs(const VENC_STREAM_S* venc_stream) {
+    size_t jpeg_size = 0;
+    for (CVI_U32 i = 0; i < venc_stream->u32PackCount; i++) {
+        const VENC_PACK_S* pack = &venc_stream->pstPack[i];
+        if (pack->u32Len < pack->u32Offset) return;
+        jpeg_size += pack->u32Len - pack->u32Offset;
+    }
+    if (jpeg_size == 0 || jpeg_size > MAX_JPEG_BYTES) {
+        jpeg_drop_cnt.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
     pthread_mutex_lock(&jpeg_mutex);
-    if (!g_jpeg_buf) {
-        g_jpeg_buf = malloc(512 * 1024);
+    if (jpeg_size > g_jpeg_capacity) {
+        uint8_t* resized = (uint8_t*)realloc(g_jpeg_buf, jpeg_size);
+        if (!resized) {
+            pthread_mutex_unlock(&jpeg_mutex);
+            jpeg_drop_cnt.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        g_jpeg_buf = resized;
+        g_jpeg_capacity = jpeg_size;
     }
-    if (g_jpeg_buf && jpeg_size <= 512 * 1024) {
-        memcpy(g_jpeg_buf, jpeg_data, jpeg_size);
-        g_jpeg_size = jpeg_size;
-        g_jpeg_ready = true;
-        pthread_cond_signal(&jpeg_cond);
+    size_t offset = 0;
+    for (CVI_U32 i = 0; i < venc_stream->u32PackCount; i++) {
+        const VENC_PACK_S* pack = &venc_stream->pstPack[i];
+        size_t pack_size = pack->u32Len - pack->u32Offset;
+        memcpy(g_jpeg_buf + offset, pack->pu8Addr + pack->u32Offset, pack_size);
+        offset += pack_size;
     }
+    g_jpeg_size = (int)jpeg_size;
+    g_jpeg_ready = true;
+    pthread_cond_signal(&jpeg_cond);
     pthread_mutex_unlock(&jpeg_mutex);
 }
 
@@ -1287,15 +1755,29 @@ void* yolo_inference_thread(void* arg) {
         
         // Get frame from YOLO channel
         if (CVI_VPSS_GetChnFrame(vpss_grp, VPSS_CHN_YOLO, &frame_yolo, YOLO_TIMEOUT) == CVI_SUCCESS) {
+            TriggerEvent trigger_event;
+            unsigned int trigger_depth = 0;
+            bool has_trigger = false;
+            if (g_inference_mode == MODE_TRIGGER || g_inference_mode == MODE_ALL) {
+                has_trigger = pop_trigger(&trigger_event, &trigger_depth);
+            }
+            if (g_inference_mode == MODE_TRIGGER && !has_trigger) {
+                // Keep the VPSS channel drained while idle so camera capture never stalls.
+                CVI_VPSS_ReleaseChnFrame(vpss_grp, VPSS_CHN_YOLO, &frame_yolo);
+                continue;
+            }
             
             // Drain stale frames: if more frames are queued, skip to newest
             // This ensures we always run inference on the most recent frame
             VIDEO_FRAME_INFO_S frame_newer;
             int drained = 0;
-            while (CVI_VPSS_GetChnFrame(vpss_grp, VPSS_CHN_YOLO, &frame_newer, 0) == CVI_SUCCESS) {
-                CVI_VPSS_ReleaseChnFrame(vpss_grp, VPSS_CHN_YOLO, &frame_yolo);
-                frame_yolo = frame_newer;
-                drained++;
+            if (g_inference_mode == MODE_CONTINUOUS ||
+                (g_inference_mode == MODE_ALL && !has_trigger)) {
+                while (CVI_VPSS_GetChnFrame(vpss_grp, VPSS_CHN_YOLO, &frame_newer, 0) == CVI_SUCCESS) {
+                    CVI_VPSS_ReleaseChnFrame(vpss_grp, VPSS_CHN_YOLO, &frame_yolo);
+                    frame_yolo = frame_newer;
+                    drained++;
+                }
             }
             if (drained > 0) {
                 // This is normal under high capture rate - not an error
@@ -1304,6 +1786,11 @@ void* yolo_inference_thread(void* arg) {
             // Perform YOLO detection
             cvtdl_object_t obj_meta = {0};
             CVI_TDL_YOLOV8_Detection(tdl_handle, &frame_yolo, &obj_meta);
+
+            struct timeval inference_done_tv;
+            gettimeofday(&inference_done_tv, NULL);
+            const uint64_t inference_done_us =
+                inference_done_tv.tv_sec * 1000000ULL + inference_done_tv.tv_usec;
             
             yolo_object_cnt.fetch_add(obj_meta.size, std::memory_order_relaxed);
             yolo_frame_cnt.fetch_add(1, std::memory_order_relaxed);
@@ -1322,10 +1809,8 @@ void* yolo_inference_thread(void* arg) {
             }
             
             // Send metadata (even if 0 objects)
-            send_yolo_metadata(&obj_meta);
-            
-            // Send to UART
-            uart_send_detections(&obj_meta);
+            send_yolo_metadata(&obj_meta, frame_yolo.stVFrame.u64PTS, inference_done_us,
+                               has_trigger ? &trigger_event : NULL, trigger_depth);
             
             // Control Detection LED (P19) based on YOLO output
             detect_led_set(obj_meta.size > 0 ? 1 : 0);
@@ -1366,16 +1851,20 @@ void cleanup() {
         close(metadata_socket);
         metadata_socket = -1;
     }
-    
-    // Stop VENC
-    CVI_VENC_StopRecvFrame(VENC_CHN_JPEG);
-    CVI_VENC_DestroyChn(VENC_CHN_JPEG);
+
+    // Stop optional VENC.
+    if (g_stream_enabled) {
+        CVI_VENC_StopRecvFrame(VENC_CHN_JPEG);
+        CVI_VENC_DestroyChn(VENC_CHN_JPEG);
+    }
     
     // Stop VPSS
     if (!g_no_yolo) {
         CVI_VPSS_DisableChn(vpss_grp, VPSS_CHN_YOLO);
     }
-    CVI_VPSS_DisableChn(vpss_grp, VPSS_CHN_STREAM);
+    if (g_stream_enabled) {
+        CVI_VPSS_DisableChn(vpss_grp, VPSS_CHN_STREAM);
+    }
     CVI_VPSS_StopGrp(vpss_grp);
     CVI_VPSS_DestroyGrp(vpss_grp);
     
@@ -1392,16 +1881,17 @@ void cleanup() {
 }
 
 void signal_handler(int sig) {
-    printf("\n[Signal] Received signal %d, cleaning up...\n", sig);
-    cleanup();
-    exit(0);
+    (void)sig;
+    // Only async-signal-safe work belongs here. Main performs ordered cleanup.
+    stop_requested = 1;
 }
 
 // ========== MAIN ==========
 int main(int argc, char *argv[]) {
     // Parse command-line arguments
     const char* model_path = parse_args(argc, argv);
-    if (!model_path && !g_no_yolo) return -1;
+    if (!g_args_valid || (!model_path && !g_no_yolo)) return -1;
+    if (g_dry_run) return dry_run_memory_admission();
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -1424,6 +1914,20 @@ int main(int argc, char *argv[]) {
     g_yolo_frame_size = yolo_plane_stride * g_yolo_h * 3;
     int stream_y_stride = align_up(g_stream_w, STRIDE_ALIGN);
     g_stream_nv12_size = stream_y_stride * g_stream_h * 3 / 2;
+    size_t vb_bytes = estimate_vb_bytes();
+    size_t mem_available = get_mem_available_bytes();
+    size_t vb_budget = get_vb_budget_bytes();
+    if (vb_bytes > vb_budget) {
+        printf("[FATAL] Requested video pools need %.1f MiB; current budget is %.1f MiB.\n",
+               vb_bytes / (1024.0 * 1024.0), vb_budget / (1024.0 * 1024.0));
+        if (mem_available > 0) {
+            printf("[FATAL] MemAvailable is %.1f MiB; reserve is %.1f MiB.\n",
+                   mem_available / (1024.0 * 1024.0), SYSTEM_HEADROOM_BYTES / (1024.0 * 1024.0));
+        }
+        printf("[FATAL] Lower camera/stream resolution or YOLO input size.\n");
+        close(cam_fd);
+        return -1;
+    }
 
     printf("\n");
     printf("================================================\n");
@@ -1432,7 +1936,14 @@ int main(int argc, char *argv[]) {
     if (!g_no_yolo) {
         printf("  YOLO:    %dx%d RGB_888_PLANAR\n", g_yolo_w, g_yolo_h);
     }
-    printf("  Stream:  %dx%d NV12 -> JPEG (Q=%d%%)\n", g_stream_w, g_stream_h, g_jpeg_quality);
+    if (g_stream_enabled) {
+        printf("  Stream:  %dx%d NV12 -> JPEG (Q=%d%%)\n", g_stream_w, g_stream_h, g_jpeg_quality);
+    } else {
+        printf("  Stream:  disabled (VPSS/VENC/HTTP bypassed)\n");
+    }
+    printf("  VB pool estimate: %.1f MiB (budget %.1f MiB, MemAvailable %.1f MiB)\n",
+           vb_bytes / (1024.0 * 1024.0), vb_budget / (1024.0 * 1024.0),
+           mem_available / (1024.0 * 1024.0));
     if (!g_no_yolo) {
         printf("  Model:   %s\n", model_path);
         printf("  Conf:    %.2f  NMS: %.2f\n", g_conf_thresh, g_nms_thresh);
@@ -1458,13 +1969,15 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    // 3. Initialize VENC (JPEG encoder)
-    printf("[INIT] Setting up VENC...\n");
-    if (venc_init() < 0) {
-        printf("[FATAL] VENC init failed\n");
-        close(cam_fd);
-        cleanup();
-        return -1;
+    // 3. Initialize VENC only when Ethernet video is enabled.
+    if (g_stream_enabled) {
+        printf("[INIT] Setting up VENC...\n");
+        if (venc_init() < 0) {
+            printf("[FATAL] VENC init failed\n");
+            close(cam_fd);
+            cleanup();
+            return -1;
+        }
     }
 
     // 4. Initialize TDL (YOLO) - skip if --no-yolo
@@ -1493,7 +2006,7 @@ int main(int argc, char *argv[]) {
     }
     
     // 4.5 Initialize metadata broadcast socket
-    if (!g_no_yolo) {
+    if (!g_no_yolo && (g_output_transport & OUTPUT_ETHERNET)) {
         init_metadata_socket();
     }
     
@@ -1501,7 +2014,9 @@ int main(int argc, char *argv[]) {
     led_init();
     
     // 4.7 Initialize UART serial output
-    if (!g_no_yolo && g_uart_dev) {
+    if (!g_no_yolo && g_uart_dev &&
+        ((g_output_transport & OUTPUT_UART) ||
+         (g_inference_mode != MODE_CONTINUOUS && g_trigger_source == TRIGGER_UART))) {
         uart_init();
     }
 
@@ -1514,12 +2029,22 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    // 6. Start HTTP server thread
+    // 6. Start optional HTTP/JPEG threads.
     pthread_t http_thread;
-    pthread_create(&http_thread, NULL, http_server_thread, NULL);
-    
-    // 6.5 Start JPEG send thread
-    pthread_create(&jpeg_send_thread_id, NULL, jpeg_send_thread_func, NULL);
+    bool stream_threads_started = false;
+    if (g_stream_enabled) {
+        pthread_create(&http_thread, NULL, http_server_thread, NULL);
+        pthread_create(&jpeg_send_thread_id, NULL, jpeg_send_thread_func, NULL);
+        stream_threads_started = true;
+    }
+
+    // 6.5 Start optional trigger input. Queue capacity is fixed at three.
+    pthread_t trigger_thread;
+    bool trigger_thread_started = false;
+    if (!g_no_yolo && g_inference_mode != MODE_CONTINUOUS) {
+        pthread_create(&trigger_thread, NULL, trigger_input_thread, NULL);
+        trigger_thread_started = true;
+    }
     
     // 7. Start YOLO inference thread (if enabled)
     if (!g_no_yolo) {
@@ -1549,11 +2074,11 @@ int main(int argc, char *argv[]) {
     frame_in.stVFrame.u32Height = g_cam_h;
     frame_in.stVFrame.enPixelFormat = PIXEL_FORMAT_YUYV;
     frame_in.stVFrame.enVideoFormat = VIDEO_FORMAT_LINEAR;
-    frame_in.stVFrame.u32Stride[0] = g_cam_w * 2;
+    frame_in.stVFrame.u32Stride[0] = g_cam_stride;
     frame_in.stVFrame.u32Stride[1] = 0;
     frame_in.stVFrame.u32Stride[2] = 0;
 
-    while (running) {
+    while (running && !stop_requested) {
         struct v4l2_buffer buf;
         memset(&buf, 0, sizeof(buf));
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -1561,9 +2086,15 @@ int main(int argc, char *argv[]) {
 
         // 1. Dequeue frame từ camera
         if (ioctl(cam_fd, VIDIOC_DQBUF, &buf) < 0) {
+            if (errno == ENODEV || errno == EIO) {
+                printf("[FATAL] Camera device %s disconnected (VIDIOC_DQBUF: %s)\n",
+                       g_camera_dev, strerror(errno));
+                break;
+            }
             usleep(1000);
             continue;
         }
+        capture_total.fetch_add(1, std::memory_order_relaxed);
 
         int vb_idx;
         size_t copy_len;
@@ -1583,15 +2114,18 @@ int main(int argc, char *argv[]) {
                 skip_cnt++;
                 continue;
             }
-            copy_len = cam_bufs[buf.index].len;
-            if (copy_len > (size_t)g_cam_frame_size) copy_len = g_cam_frame_size;
-            memcpy(vb_cache[vb_idx].vir_addr, cam_bufs[buf.index].addr, copy_len);
+            const size_t source_stride = g_v4l2_stride > 0 ? (size_t)g_v4l2_stride : (size_t)g_cam_w * 2;
+            const size_t row_bytes = (size_t)g_cam_w * 2;
+            const uint8_t* source = (const uint8_t*)cam_bufs[buf.index].addr;
+            for (int row = 0; row < g_cam_h; row++) {
+                memcpy(vb_cache[vb_idx].vir_addr + (size_t)row * g_cam_stride,
+                       source + (size_t)row * source_stride, row_bytes);
+            }
+            copy_len = g_cam_frame_size;
             CVI_SYS_IonFlushCache(vb_cache[vb_idx].phy_addr, vb_cache[vb_idx].vir_addr, copy_len);
         }
         
         ioctl(cam_fd, VIDIOC_QBUF, &buf);
-
-        // 3. Update only the per-frame fields (rest is pre-initialized)
         frame_in.stVFrame.u64PhyAddr[0] = vb_cache[vb_idx].phy_addr;
         frame_in.stVFrame.pu8VirAddr[0] = vb_cache[vb_idx].vir_addr;
         frame_in.stVFrame.u32Length[0] = copy_len;
@@ -1601,13 +2135,15 @@ int main(int argc, char *argv[]) {
 
         // 4. Gửi frame vào VPSS (broadcasts to both channels)
         if (CVI_VPSS_SendFrame(vpss_grp, &frame_in, API_TIMEOUT) != CVI_SUCCESS) {
-            release_vb_buffer(vb_idx);
+            vpss_send_fail_cnt.fetch_add(1, std::memory_order_relaxed);
+            if (!g_use_userptr) release_vb_buffer(vb_idx);
             continue;
         }
 
         // 5. Lấy frame từ Channel 1 (Stream) -> VENC -> HTTP
-        VIDEO_FRAME_INFO_S frame_stream;
-        if (CVI_VPSS_GetChnFrame(vpss_grp, VPSS_CHN_STREAM, &frame_stream, API_TIMEOUT) == CVI_SUCCESS) {
+        if (g_stream_enabled) {
+            VIDEO_FRAME_INFO_S frame_stream;
+            if (CVI_VPSS_GetChnFrame(vpss_grp, VPSS_CHN_STREAM, &frame_stream, API_TIMEOUT) == CVI_SUCCESS) {
             CVI_S32 venc_ret = CVI_VENC_SendFrame(VENC_CHN_JPEG, &frame_stream, API_TIMEOUT);
             if (venc_ret == CVI_SUCCESS) {
                 VENC_CHN_STATUS_S stStat;
@@ -1621,16 +2157,20 @@ int main(int argc, char *argv[]) {
                     
                     venc_ret = CVI_VENC_GetStream(VENC_CHN_JPEG, &venc_stream, API_TIMEOUT);
                     if (venc_ret == CVI_SUCCESS && venc_stream.u32PackCount > 0) {
-                        void *jpeg_data = venc_stream.pstPack[0].pu8Addr + venc_stream.pstPack[0].u32Offset;
-                        int jpeg_size = venc_stream.pstPack[0].u32Len - venc_stream.pstPack[0].u32Offset;
-                        
-                        queue_jpeg_for_send(jpeg_data, jpeg_size);
+                        queue_jpeg_packs(&venc_stream);
                         stream_frame_cnt.fetch_add(1, std::memory_order_relaxed);
+                    } else {
+                        venc_get_fail_cnt.fetch_add(1, std::memory_order_relaxed);
                     }
                     CVI_VENC_ReleaseStream(VENC_CHN_JPEG, &venc_stream);
                 }
+            } else {
+                venc_send_fail_cnt.fetch_add(1, std::memory_order_relaxed);
             }
-            CVI_VPSS_ReleaseChnFrame(vpss_grp, VPSS_CHN_STREAM, &frame_stream);
+                CVI_VPSS_ReleaseChnFrame(vpss_grp, VPSS_CHN_STREAM, &frame_stream);
+            } else {
+                stream_get_fail_cnt.fetch_add(1, std::memory_order_relaxed);
+            }
         }
 
         if (!g_use_userptr) {
@@ -1656,6 +2196,8 @@ int main(int argc, char *argv[]) {
                 printf(" | Skip:%d", skip_cnt);
                 skip_cnt = 0;
             }
+            unsigned int jpeg_drops = jpeg_drop_cnt.exchange(0, std::memory_order_relaxed);
+            if (jpeg_drops > 0) printf(" | JpegDrop:%u", jpeg_drops);
             printf("\n");
             
             last_time = current_time;
@@ -1663,22 +2205,30 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    running = 0;
     close(cam_fd);
+
+    printf("[Summary] Capture:%u VPSSFail:%u StreamGetFail:%u VencSendFail:%u VencGetFail:%u\n",
+           capture_total.load(), vpss_send_fail_cnt.load(), stream_get_fail_cnt.load(),
+           venc_send_fail_cnt.load(), venc_get_fail_cnt.load());
     
-    // Signal send thread to stop
-    pthread_mutex_lock(&jpeg_mutex);
-    g_jpeg_ready = true;  // Wake up send thread
-    pthread_cond_signal(&jpeg_cond);
-    pthread_mutex_unlock(&jpeg_mutex);
-    
-    pthread_join(http_thread, NULL);
-    pthread_join(jpeg_send_thread_id, NULL);
+    if (stream_threads_started) {
+        pthread_mutex_lock(&jpeg_mutex);
+        g_jpeg_ready = true;  // Wake up send thread
+        pthread_cond_signal(&jpeg_cond);
+        pthread_mutex_unlock(&jpeg_mutex);
+        pthread_join(http_thread, NULL);
+        pthread_join(jpeg_send_thread_id, NULL);
+    }
+    if (trigger_thread_started) {
+        pthread_join(trigger_thread, NULL);
+    }
     if (yolo_thread_started) {
         pthread_join(yolo_thread, NULL);
     }
     
     // Free JPEG buffer
-    if (g_jpeg_buf) { free(g_jpeg_buf); g_jpeg_buf = NULL; }
+    if (g_jpeg_buf) { free(g_jpeg_buf); g_jpeg_buf = NULL; g_jpeg_capacity = 0; }
     
     cleanup();
     return 0;

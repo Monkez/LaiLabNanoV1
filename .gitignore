@@ -32,6 +32,8 @@ desktop.ini
 tmp_*.py
 check.py
 extract.py
+backend.stdout.log
+backend.stderr.log
 
 # Build outputs
 build/

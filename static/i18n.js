@@ -101,6 +101,12 @@ const translations = {
         inference_title: 'Test Inference',
         inference_connect: 'Connect Data',
         inference_no_stream: 'No Active Stream',
+        inference_trigger_title: 'Manual Trigger',
+        inference_trigger_ready: 'Connect data to trigger',
+        inference_trigger_port: 'UDP port',
+        inference_trigger_fire: 'Trigger',
+        inference_trigger_results: 'Trigger results',
+        inference_trigger_empty: 'No trigger results yet',
         
         // Guide
         guide_title: 'Quick Start Guide',
@@ -249,6 +255,12 @@ const translations = {
         inference_title: 'Kiểm thử Suy luận',
         inference_connect: 'Kết nối Truyền dữ liệu',
         inference_no_stream: 'Không tìm thấy Stream',
+        inference_trigger_title: 'Trigger thủ công',
+        inference_trigger_ready: 'Kết nối dữ liệu để trigger',
+        inference_trigger_port: 'Cổng UDP',
+        inference_trigger_fire: 'Trigger',
+        inference_trigger_results: 'Kết quả trigger',
+        inference_trigger_empty: 'Chưa có kết quả trigger',
         
         // Guide
         guide_title: 'Hướng dẫn Sử dụng Nhanh',

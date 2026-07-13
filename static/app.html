@@ -307,12 +307,83 @@
                 </div>
 
                 <!-- ====== PAGE: Deployment ====== -->
-                <div class="page-content" id="page-deploy">
+                <div class="page-content config-basic" id="page-deploy">
                     <div class="deploy-layout">
+                        <div class="deploy-card runtime-mode-card">
+                            <div class="deploy-card-header">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><path d="M8 5v14l11-7z"/><path d="M3 5v14"/></svg>
+                                <span>Inference Runtime</span>
+                                <div class="config-level-toggle" role="group" aria-label="Configuration level">
+                                    <button type="button" class="config-level-btn active" data-config-level="basic" aria-pressed="true">Basic</button>
+                                    <button type="button" class="config-level-btn" data-config-level="advanced" aria-pressed="false">Advanced</button>
+                                </div>
+                                <span class="runtime-performance-note">Bounded queue · low latency</span>
+                            </div>
+                            <div class="deploy-card-body runtime-mode-body">
+                                <div class="runtime-mode-selector" role="radiogroup" aria-label="Inference mode">
+                                    <label class="runtime-mode-option active" title="Continuously infer the newest available camera frame">
+                                        <input type="radio" name="inferenceMode" value="continuous" checked>
+                                        <span><strong>Continuous</strong><small>Infer the newest camera frame continuously</small></span>
+                                    </label>
+                                    <label class="runtime-mode-option" title="Infer only on UART, Ethernet, or GPIO trigger; queue up to 3 captures">
+                                        <input type="radio" name="inferenceMode" value="trigger">
+                                        <span><strong>Trigger</strong><small>Infer on demand, queue up to 3 captures</small></span>
+                                    </label>
+                                    <label class="runtime-mode-option" title="Run continuously and correlate queued triggers with upcoming results">
+                                        <input type="radio" name="inferenceMode" value="all">
+                                        <span><strong>All mode</strong><small>Continuous inference plus correlated triggers</small></span>
+                                    </label>
+                                </div>
+                                <div class="runtime-options-grid">
+                                    <label class="runtime-field runtime-stream-field">
+                                        <span>Ethernet video stream</span>
+                                        <input type="checkbox" id="streamOutputEnabled" checked>
+                                        <small>MJPEG on TCP 8080</small>
+                                    </label>
+                                    <label class="runtime-field trigger-only-field">
+                                        <span>Trigger input</span>
+                                        <select id="triggerSource" class="form-select form-select-sm">
+                                            <option value="ethernet">Ethernet (UDP)</option>
+                                            <option value="uart">UART</option>
+                                            <option value="gpio">Input GPIO</option>
+                                        </select>
+                                    </label>
+                                    <label class="runtime-field trigger-ethernet-field trigger-only-field advanced-only">
+                                        <span>Trigger UDP port</span>
+                                        <input type="number" id="triggerPort" class="form-input form-input-sm" value="8082" min="1024" max="65535">
+                                    </label>
+                                    <label class="runtime-field trigger-gpio-field trigger-only-field hidden">
+                                        <span>GPIO / edge</span>
+                                        <span class="runtime-inline-inputs">
+                                            <input type="number" id="triggerGpio" class="form-input form-input-sm" value="502" min="0" max="1024" title="Linux GPIO number">
+                                            <select id="triggerEdge" class="form-select form-select-sm">
+                                                <option value="rising">Rising</option>
+                                                <option value="falling">Falling</option>
+                                                <option value="both">Both</option>
+                                            </select>
+                                        </span>
+                                    </label>
+                                    <label class="runtime-field">
+                                        <span>Detection output</span>
+                                        <select id="outputTransport" class="form-select form-select-sm">
+                                            <option value="ethernet">Ethernet JSON/UDP</option>
+                                            <option value="uart">UART JSON Lines</option>
+                                            <option value="both">Ethernet + UART</option>
+                                            <option value="none">None</option>
+                                        </select>
+                                    </label>
+                                    <label class="runtime-field output-ethernet-field advanced-only">
+                                        <span>Output UDP port</span>
+                                        <input type="number" id="metadataPort" class="form-input form-input-sm" value="8081" min="1024" max="65535">
+                                    </label>
+                                </div>
+                                <div class="runtime-help" id="runtimeModeHelp">Continuous mode drops stale inference frames and always processes the newest frame for minimum latency.</div>
+                            </div>
+                        </div>
                         <!-- Top Row: 3 cards -->
                         <div class="deploy-top-row">
                             <!-- Card 1: Model -->
-                            <div class="deploy-card">
+                            <div class="deploy-card deploy-model-card">
                                 <div class="deploy-card-header">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                                     <span data-i18n="deploy_model_select">Model</span>
@@ -344,7 +415,7 @@
                             </div>
 
                             <!-- Card 2: Device Connection + Change IP -->
-                            <div class="deploy-card">
+                            <div class="deploy-card deploy-device-card">
                                 <div class="deploy-card-header">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
                                     <span data-i18n="deploy_device_section">Device</span>
@@ -363,39 +434,24 @@
                                             <span data-i18n="deploy_device_offline">Not connected</span>
                                         </div>
                                     </div>
-                                    <div class="config-row" style="margin-top:10px">
-                                        <label>SSH User</label>
-                                        <div class="config-inputs">
-                                            <input type="text" id="sshUser" class="form-input form-input-sm" value="root" placeholder="User">
-                                        </div>
+                                    <div class="device-auth-compact advanced-only">
+                                        <label>SSH</label>
+                                        <input type="text" id="sshUser" class="form-input form-input-sm" value="root" placeholder="User" title="SSH username">
+                                        <input type="password" id="sshPassword" class="form-input form-input-sm" value="root" placeholder="SSH password" title="SSH password">
                                     </div>
-                                    <div class="config-row">
-                                        <label>Password</label>
-                                        <div class="config-inputs">
-                                            <input type="password" id="sshPassword" class="form-input form-input-sm" placeholder="(optional)">
-                                        </div>
+                                    <div class="device-network-compact advanced-only">
+                                        <label data-i18n="deploy_change_ip">Network</label>
+                                        <input type="text" id="newDeviceIp" class="form-input form-input-sm" value="192.168.100.2" placeholder="Device IP" title="New device IP">
+                                        <input type="text" id="newSubnetMask" class="form-input form-input-sm" value="255.255.255.0" placeholder="Subnet" title="Subnet mask">
+                                        <button type="button" class="btn-secondary btn-sm" id="btnApplyIp">
+                                            <span data-i18n="deploy_apply_ip">Apply</span>
+                                        </button>
                                     </div>
-                                    <div class="config-divider"></div>
-                                    <div class="config-row">
-                                        <label data-i18n="deploy_change_ip">Change IP</label>
-                                        <div class="config-inputs">
-                                            <input type="text" id="newDeviceIp" class="form-input form-input-sm" value="192.168.100.2" placeholder="192.168.100.2">
-                                        </div>
-                                    </div>
-                                    <div class="config-row">
-                                        <label data-i18n="deploy_subnet">Subnet</label>
-                                        <div class="config-inputs">
-                                            <input type="text" id="newSubnetMask" class="form-input form-input-sm" value="255.255.255.0">
-                                        </div>
-                                    </div>
-                                    <button type="button" class="btn-secondary btn-sm" id="btnApplyIp" style="width:100%">
-                                        <span data-i18n="deploy_apply_ip">Apply IP</span>
-                                    </button>
                                 </div>
                             </div>
 
                             <!-- Card 3: Configuration + Deploy Button -->
-                            <div class="deploy-card">
+                            <div class="deploy-card deploy-config-card">
                                 <div class="deploy-card-header">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                                     <span data-i18n="deploy_configuration">Configuration</span>
@@ -409,7 +465,7 @@
                                             <input type="number" id="camHeight" class="form-input form-input-sm" value="480" min="240" max="1080">
                                         </div>
                                     </div>
-                                    <div class="config-row">
+                                    <div class="config-row advanced-only">
                                         <label data-i18n="deploy_stream_res_label">Stream</label>
                                         <div class="config-inputs">
                                             <input type="number" id="streamWidth" class="form-input form-input-sm" value="640" min="320" max="1920" title="Stream Output Resolution">
@@ -425,7 +481,7 @@
                                             <input type="number" id="yoloInputH" class="form-input form-input-sm" value="320" min="32" max="1280" step="32">
                                         </div>
                                     </div>
-                                    <div class="config-row">
+                                    <div class="config-row advanced-only">
                                         <label>Tuning</label>
                                         <div class="config-inputs" style="gap:4px">
                                             <input type="number" id="confThresh" class="form-input form-input-sm" value="0.5" min="0.01" max="1.0" step="0.01" style="width:55px" title="Confidence Threshold (0.01-1.0)">
@@ -433,7 +489,7 @@
                                             <input type="number" id="nmsThresh" class="form-input form-input-sm" value="0.5" min="0.01" max="1.0" step="0.01" style="width:55px" title="NMS Threshold (0.01-1.0)">
                                         </div>
                                     </div>
-                                    <div class="config-row">
+                                    <div class="config-row advanced-only">
                                         <label>Options</label>
                                         <div class="config-inputs" style="gap:24px;">
                                             <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px" title="Stream only, no AI processing">
@@ -445,7 +501,7 @@
                                             </div>
                                         </div>
                                     </div>
-                                    <div class="config-row">
+                                    <div class="config-row advanced-only">
                                         <label>UART</label>
                                         <div class="config-inputs" style="gap:6px;">
                                             <input type="text" id="uartDev" class="form-input form-input-sm" value="/dev/ttyS0" style="width:95px; text-align:center; padding:4px;" title="UART Device Path">
@@ -516,7 +572,7 @@
                 <div class="page-content" id="page-inference" style="display:flex; flex-direction:column; gap:12px; height:100%; overflow:hidden; padding-bottom:0;">
                     
                     <!-- Row 1: Stream Monitor -->
-                    <div class="content-grid" style="flex: 1; min-height: 0; padding-bottom: 12px; border-bottom: 1px solid var(--border-primary); margin-bottom: 0;">
+                    <div class="content-grid" style="flex: 1.25; min-height: 0; padding-bottom: 12px; border-bottom: 1px solid var(--border-primary); margin-bottom: 0;">
                         <!-- Stream Setup (Left Column) -->
                         <div class="panel" style="display:flex; flex-direction:column; height: 100%;">
                             <div class="panel-body" style="padding: 12px; display:flex; flex-direction:column; gap:12px;">
@@ -535,6 +591,41 @@
                                         <div style="display:flex; align-items:center; gap:4px;">Stream FPS: <span id="lblVideoFps" style="color:var(--text-primary); font-weight:600;">--</span></div>
                                         <div style="display:flex; align-items:center; gap:4px;">YOLO FPS: <span id="lblYoloFps" style="color:#22c55e; font-weight:600;">--</span></div>
                                     </div>
+
+                                    <section class="trigger-test-card" aria-labelledby="triggerTestTitle">
+                                        <div class="trigger-test-heading">
+                                            <h3 id="triggerTestTitle" data-i18n="inference_trigger_title">Manual Trigger</h3>
+                                            <span id="triggerSendStatus" class="trigger-send-status" data-i18n="inference_trigger_ready">Connect data to trigger</span>
+                                        </div>
+                                        <div class="trigger-test-actions">
+                                            <label for="inferenceTriggerPort" data-i18n="inference_trigger_port">UDP port</label>
+                                            <input type="number" id="inferenceTriggerPort" class="form-input form-input-sm" value="8082" min="1024" max="65535">
+                                            <button class="btn-primary btn-sm trigger-fire-btn" id="btnTriggerInference" type="button" disabled>
+                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>
+                                                <span data-i18n="inference_trigger_fire">Trigger</span>
+                                            </button>
+                                        </div>
+
+                                        <div class="trigger-result-toolbar">
+                                            <span data-i18n="inference_trigger_results">Trigger results</span>
+                                            <div class="trigger-history-nav">
+                                                <button class="btn-icon-sm" id="btnTriggerPrev" type="button" title="Previous trigger result" aria-label="Previous trigger result" disabled>&larr;</button>
+                                                <strong id="triggerResultIndex">0 / 0</strong>
+                                                <button class="btn-icon-sm" id="btnTriggerNext" type="button" title="Next trigger result" aria-label="Next trigger result" disabled>&rarr;</button>
+                                                <button class="btn-icon-sm" id="btnTriggerClear" type="button" title="Clear trigger history" aria-label="Clear trigger history" disabled>&times;</button>
+                                            </div>
+                                        </div>
+                                        <div id="triggerResultEmpty" class="trigger-result-empty" data-i18n="inference_trigger_empty">No trigger results yet</div>
+                                        <div id="triggerResultView" class="trigger-result-view hidden">
+                                            <div class="trigger-result-meta">
+                                                <span><small>Trigger</small><strong id="triggerResultId">--</strong></span>
+                                                <span><small>Sequence</small><strong id="triggerResultSeq">--</strong></span>
+                                                <span><small>Latency</small><strong id="triggerResultLatency">--</strong></span>
+                                                <span><small>Objects</small><strong id="triggerResultObjects">--</strong></span>
+                                            </div>
+                                            <div id="triggerResultDetections" class="trigger-result-detections"></div>
+                                        </div>
+                                    </section>
                                 </div>
                             </div>
                         </div>
@@ -555,7 +646,7 @@
                     </div>
 
                     <!-- Row 2: Serial Monitor -->
-                    <div class="content-grid" style="flex: 1; min-height: 0;">
+                    <div class="content-grid" style="flex: 0.75; min-height: 0;">
                         
                         <!-- Serial Setup (Left Column) -->
                         <div class="panel" style="display:flex; flex-direction:column; height: 100%;">
