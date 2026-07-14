@@ -128,3 +128,31 @@ $YOLO,<ts_ms>,<count>[,<cls>,<x1>,<y1>,<x2>,<y2>,<score>]*<XX>\r\n
 - `*<XX>`: XOR checksum
 
 View `esp32_test.h` for an example Arduino sketch to read and parse this data.
+
+## Ethernet inference benchmark
+
+`ethernet_inference_demo` measures a camera-free path where a PC sends frames
+that are already resized to 320x320. It supports direct RGB888 planar input and
+bandwidth-efficient NV12 input. The NV12 path receives into three DMA buffers,
+overlaps TCP reception with VPSS NV12-to-RGB conversion and TPU inference, skips
+stream/VENC work, and emits compact binary detection packets over UART.
+
+Build and copy `build/ethernet_inference_demo` to the board, then run:
+
+```bash
+./ethernet_inference_demo /root/yolo11n_320.cvimodel \
+  --input nv12 --skip-vpss --uart /dev/ttyS1 --baud 921600
+```
+
+From the PC, send synthetic moving frames at the maximum sustainable rate:
+
+```bash
+python tools/send_ethernet_frames.py 192.168.100.2 \
+  --format nv12 --seconds 20 --fps 0
+```
+
+To validate detections with a real image, add `--image path/to/image.jpg`. The
+wire format is a 20-byte big-endian header (`LNF1`, frame id, sender time,
+payload size), followed by either 307200 RGB planar bytes or 153600 NV12 bytes.
+The receiver and sender input formats must match. This program is a
+benchmark/demo rather than an autostart replacement for `Yolo_CSIStream`.

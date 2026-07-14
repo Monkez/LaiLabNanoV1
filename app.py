@@ -1520,6 +1520,9 @@ def validate_deploy_request(data):
         raise ValueError('noYolo must be a boolean.')
     if no_yolo and inference_mode != 'continuous':
         raise ValueError('Trigger and all modes require YOLO inference to be enabled.')
+    camera_exposure = data.get('cameraExposure', 'auto')
+    if camera_exposure != 'auto':
+        camera_exposure = bounded_int(camera_exposure, 'cameraExposure', 0, 100000)
     if (trigger_source == 'uart' or output_transport in {'uart', 'both'}) and not uart_dev:
         raise ValueError('A UART device is required for the selected trigger/output transport.')
     return {
@@ -1536,6 +1539,7 @@ def validate_deploy_request(data):
         'nmsThresh': bounded_float(data.get('nmsThresh', 0.5), 'nmsThresh', 0, 1),
         'noYolo': no_yolo,
         'jpegQuality': bounded_int(data.get('jpegQuality', 70), 'jpegQuality', 1, 100),
+        'cameraExposure': camera_exposure,
         'uartDev': uart_dev,
         'baudRate': bounded_int(data.get('baudRate', 115200), 'baudRate', 1200, 1000000),
         'password': password,
@@ -1644,6 +1648,7 @@ def deploy_to_device():
     camWidth, camHeight = req['camWidth'], req['camHeight']
     confThresh, nmsThresh = req['confThresh'], req['nmsThresh']
     noYolo, jpegQuality = req['noYolo'], req['jpegQuality']
+    cameraExposure = req['cameraExposure']
     uartDev, baudRate, password, user = req['uartDev'], req['baudRate'], req['password'], req['user']
     inferenceMode, streamOutput = req['inferenceMode'], req['streamOutput']
     triggerSource, triggerPort = req['triggerSource'], req['triggerPort']
@@ -1721,6 +1726,9 @@ def deploy_to_device():
             try:
                 ssh_exec('/etc/init.d/S99yolocam stop')
                 ssh_exec('killall -9 Yolo_CSIStream')
+                # Disable the legacy service that otherwise races this runtime
+                # for the single CVI VB/VPSS instance after reboot.
+                ssh_exec('if [ -f /etc/init.d/S99yolo_camera ]; then mv /etc/init.d/S99yolo_camera /root/S99yolo_camera.disabled; fi')
             except Exception:
                 pass
 
@@ -1760,6 +1768,7 @@ def deploy_to_device():
             args_list.append(f"--quality {jpegQuality}")
             args_list.append(f"--conf {confThresh}")
             args_list.append(f"--nms {nmsThresh}")
+            args_list.append(f"--exposure {cameraExposure}")
             args_list.append(f"--mode {inferenceMode}")
             args_list.append(f"--output {outputTransport}")
             args_list.append(f"--metadata-port {metadataPort}")
@@ -1786,20 +1795,58 @@ APP_BIN="/root/Yolo_CSIStream"
 MODEL="/root/{remote_model_name}"
 ARGS="{args_str}"
 LOG_FILE="/root/yolo.log"
+WATCHDOG_PID="/var/run/yolocam-watchdog.pid"
 
 # Setup library paths for CV180xB SDK & OpenCV
 export LD_LIBRARY_PATH=/root/libs_patch/lib:/root/libs_patch/middleware_v2:/root/libs_patch/middleware_v2_3rd:/root/libs_patch/opencv:/root/libs_patch/tpu_sdk_libs:/root/libs_patch:$LD_LIBRARY_PATH
 [ -f /root/board_setup.sh ] && source /root/board_setup.sh
 
+wait_for_stable_video() {{
+    last_nodes=""
+    stable_count=0
+    attempt=0
+    while [ "$attempt" -lt 20 ]; do
+        nodes="$(ls /dev/video* 2>/dev/null | tr '\n' ' ')"
+        if [ -n "$nodes" ] && [ "$nodes" = "$last_nodes" ]; then
+            stable_count=$((stable_count + 1))
+        else
+            stable_count=0
+        fi
+        [ "$stable_count" -ge 2 ] && return 0
+        last_nodes="$nodes"
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    return 1
+}}
 
 case "$1" in
   start)
     if [ -f "$APP_BIN" ] && [ -f "$MODEL" ]; then
-        cd /root/
-        $APP_BIN $MODEL $ARGS > $LOG_FILE 2>&1 &
+        if [ -f "$WATCHDOG_PID" ] && kill -0 "$(cat "$WATCHDOG_PID")" 2>/dev/null; then
+            exit 0
+        fi
+        : > "$LOG_FILE"
+        (
+            while true; do
+                if wait_for_stable_video; then
+                    echo "[Watchdog] Starting camera runtime" >> "$LOG_FILE"
+                    cd /root/
+                    $APP_BIN $MODEL $ARGS >> "$LOG_FILE" 2>&1
+                    rc=$?
+                    echo "[Watchdog] Runtime stopped rc=$rc; waiting for camera" >> "$LOG_FILE"
+                fi
+                sleep 2
+            done
+        ) </dev/null >> "$LOG_FILE" 2>&1 &
+        echo $! > "$WATCHDOG_PID"
     fi
     ;;
   stop)
+    if [ -f "$WATCHDOG_PID" ]; then
+        kill "$(cat "$WATCHDOG_PID")" 2>/dev/null
+        rm -f "$WATCHDOG_PID"
+    fi
     killall Yolo_CSIStream 2>/dev/null
     ;;
   restart|reload)
@@ -2132,8 +2179,13 @@ def send_inference_trigger():
 
 @app.route('/api/stream_proxy')
 def stream_proxy():
-    ip = request.args.get('ip', '192.168.100.2')
-    port = int(request.args.get('port', 8080))
+    ip = valid_ipv4(request.args.get('ip', '192.168.100.2'))
+    if not ip:
+        return api_error('A valid IPv4 device address is required.')
+    try:
+        port = bounded_int(request.args.get('port', 8080), 'port', 1, 65535)
+    except ValueError as exc:
+        return api_error(str(exc))
 
     def generate():
         import time
@@ -2155,7 +2207,10 @@ def stream_proxy():
                     f"Connection: close\r\n\r\n"
                 )
                 sock.sendall(request_str.encode())
-                sock.settimeout(30.0)
+                # A healthy MJPEG source produces a frame well inside five
+                # seconds. A shorter timeout prevents abandoned browser image
+                # requests from accumulating upstream connections forever.
+                sock.settimeout(5.0)
                 
                 header_buf = b''
                 while b'\r\n\r\n' not in header_buf:
@@ -2196,6 +2251,7 @@ def stream_proxy():
                             
                         jpg_bytes = bytes(buf[start:end+2])
                         del buf[:end+2]
+                        _reconnect_count = 0
                         
                         video_frame_count += 1
                         now = time.time()
@@ -2218,14 +2274,17 @@ def stream_proxy():
                     try: sock.close()
                     except: pass
                 return
-            except Exception as e:
-                pass
+            except Exception as exc:
+                print(f'[stream_proxy] {ip}:{port} disconnected: {exc}', flush=True)
             finally:
                 if sock:
                     try: sock.close()
                     except: pass
             
             _reconnect_count += 1
+            if _reconnect_count >= 5:
+                print(f'[stream_proxy] giving up {ip}:{port} after 5 retries', flush=True)
+                return
             time.sleep(min(_reconnect_count * 0.1, 0.5))
 
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')

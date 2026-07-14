@@ -48,3 +48,24 @@ target_link_libraries(reset_btn -lpthread)
 # Hardware diagnostic: validates USB/UVC dequeue-requeue independently of VPSS.
 add_executable(v4l2_requeue_test tools/v4l2_requeue_test.c)
 target_compile_options(v4l2_requeue_test PRIVATE -O2)
+
+# Ethernet input benchmark: receives pre-sized RGB planar frames directly or
+# converts NV12 with VPSS before YOLO. It omits USB capture and video output.
+add_executable(ethernet_inference_demo tools/ethernet_inference_demo.cpp)
+target_compile_options(ethernet_inference_demo PRIVATE -O3 -DNDEBUG)
+target_link_libraries(ethernet_inference_demo
+    ${OpenCV_LIBS}
+    -mcpu=c906fdv
+    -L$ENV{SDK_PATH}/cvitek_tdl_sdk/sample/3rd/middleware/v2/lib
+    -L$ENV{SDK_PATH}/cvitek_tdl_sdk/sample/3rd/middleware/v2/lib/3rd
+    -lini -lsns_full -lsample -lisp -lvdec -lvenc -lawb -lae -laf -lcvi_bin -lcvi_bin_isp -lmisc -lisp_algo -lsys -lvpu
+    -L$ENV{SDK_PATH}/cvitek_tdl_sdk/sample/3rd/opencv/lib
+    -lopencv_core -lopencv_imgproc -lopencv_imgcodecs
+    -L$ENV{SDK_PATH}/cvitek_tdl_sdk/sample/3rd/tpu/lib
+    -lcnpy -lcvikernel -lcvimath -lcviruntime -lz -lm
+    -lcvi_ive
+    -L$ENV{SDK_PATH}/cvitek_tdl_sdk/lib
+    -lcvi_tdl
+    -L$ENV{SDK_PATH}/cvitek_tdl_sdk/sample/3rd/lib
+    -lpthread -latomic
+)

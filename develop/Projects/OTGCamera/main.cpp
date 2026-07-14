@@ -19,6 +19,7 @@
  *   --quality Q      JPEG quality 1-100         (default: 70)
  *   --conf T         YOLO confidence threshold  (default: 0.5)
  *   --nms T          YOLO NMS threshold         (default: 0.5)
+ *   --exposure V     Camera exposure: auto or absolute value
  */
 
 #include <stdio.h>
@@ -82,6 +83,7 @@ static char g_camera_dev[64] = DEFAULT_CAM_DEV;
 static bool g_camera_dev_explicit = false;
 static bool g_use_userptr = false;
 static bool g_allow_userptr = false; // Experimental: camera/VPSS ownership differs by UVC driver
+static int g_camera_exposure = -2;   // -2: keep camera default, -1: auto, >= 0: manual absolute
 static const char* g_uart_dev = NULL;  // UART device path (NULL = disabled)
 static int g_uart_baud = 115200;       // UART baudrate
 
@@ -634,6 +636,7 @@ void print_usage(const char* progname) {
     printf("  --cam WxH        Camera capture resolution (default: 640x480)\n");
     printf("  --device DEV     V4L2 device (default: auto-detect from /dev/video0)\n");
     printf("  --userptr        Enable experimental V4L2 USERPTR zero-copy path\n");
+    printf("  --exposure V     Camera exposure: auto or absolute value (e.g. 100)\n");
     printf("  --stream WxH     Stream output resolution  (default: same as cam)\n");
     printf("  --yolo N         YOLO input size NxN        (default: 640)\n");
     printf("  --quality Q      JPEG quality 1-100         (default: 70)\n");
@@ -716,6 +719,20 @@ const char* parse_args(int argc, char* argv[]) {
             g_camera_dev_explicit = true;
         } else if (strcmp(argv[i], "--userptr") == 0) {
             g_allow_userptr = true;
+        } else if (strcmp(argv[i], "--exposure") == 0 && i + 1 < argc) {
+            const char* exposure = argv[++i];
+            if (strcmp(exposure, "auto") == 0) {
+                g_camera_exposure = -1;
+            } else {
+                char* end = NULL;
+                long value = strtol(exposure, &end, 10);
+                if (!end || *end != '\0' || value < 0 || value > 100000) {
+                    printf("[ERROR] --exposure must be auto or a non-negative integer\n");
+                    g_args_valid = false;
+                    return NULL;
+                }
+                g_camera_exposure = (int)value;
+            }
         } else if (strcmp(argv[i], "--stream") == 0 && i + 1 < argc) {
             if (parse_resolution(argv[++i], &g_stream_w, &g_stream_h) != 0) {
                 printf("[ERROR] Invalid --stream format: %s (use WxH, e.g. 640x480)\n", argv[i]);
@@ -1083,7 +1100,11 @@ void send_yolo_metadata(const cvtdl_object_t* obj_meta, uint64_t capture_us,
 int sys_vb_init() {
     VB_CONFIG_S vb;
     memset(&vb, 0, sizeof(vb));
-    vb.u32MaxPoolCnt = 4;
+    // CVI_VB_SetConfig rejects zero-block pools that are still included in
+    // u32MaxPoolCnt. Exclude the stream/VENC pools entirely in --no-stream
+    // mode so the inference-only fast path can initialize successfully.
+    const CVI_U32 active_pool_count = g_stream_enabled ? 4 : 2;
+    vb.u32MaxPoolCnt = active_pool_count;
     
     // Pool 0: Input (YUYV) - cho camera
     vb.astCommPool[0].u32BlkCnt  = VB_POOL_CNT;
@@ -1139,7 +1160,8 @@ int sys_vb_init() {
         vb_cache[i].in_use.store(0, std::memory_order_relaxed);
     }
     
-    printf("[VB] Initialized with 4 pools (%d input blocks)\n", VB_POOL_CNT);
+    printf("[VB] Initialized with %u pools (%d input blocks)\n",
+           active_pool_count, VB_POOL_CNT);
     return 0;
 }
 
@@ -1304,7 +1326,9 @@ int v4l2_probe(int *fd) {
         }
     }
 
-    *fd = open(g_camera_dev, O_RDWR);
+    // Non-blocking dequeue lets the runtime detect a UVC node that disappears
+    // during re-enumeration instead of sleeping forever inside vb2_core_dqbuf.
+    *fd = open(g_camera_dev, O_RDWR | O_NONBLOCK);
     if (*fd < 0) {
         printf("[ERROR] Cannot open %s\n", g_camera_dev);
         return -1;
@@ -1357,6 +1381,31 @@ int v4l2_probe(int *fd) {
         printf("[V4L2] Framerate: %.1f FPS\n", actual_fps);
     } else {
         printf("[V4L2] Could not set framerate (driver may not support it)\n");
+    }
+
+    // Auto exposure can silently lengthen the integration time and lower the
+    // real capture cadence even when S_PARM reports 30 FPS. Apply this after
+    // S_FMT/S_PARM because many UVC devices reset controls there.
+    if (g_camera_exposure != -2) {
+        struct v4l2_control control;
+        memset(&control, 0, sizeof(control));
+        control.id = V4L2_CID_EXPOSURE_AUTO;
+        control.value = g_camera_exposure < 0 ? V4L2_EXPOSURE_APERTURE_PRIORITY
+                                               : V4L2_EXPOSURE_MANUAL;
+        if (ioctl(*fd, VIDIOC_S_CTRL, &control) < 0) {
+            printf("[WARN] Camera does not support exposure mode control: %s\n", strerror(errno));
+        } else if (g_camera_exposure < 0) {
+            printf("[V4L2] Exposure: auto\n");
+        } else {
+            control.id = V4L2_CID_EXPOSURE_ABSOLUTE;
+            control.value = g_camera_exposure;
+            if (ioctl(*fd, VIDIOC_S_CTRL, &control) < 0) {
+                printf("[WARN] Could not set manual exposure %d: %s\n",
+                       g_camera_exposure, strerror(errno));
+            } else {
+                printf("[V4L2] Exposure: manual absolute=%d\n", g_camera_exposure);
+            }
+        }
     }
     
     // Probe USERPTR support, but use MMAP + copy by default. Some UVC drivers
@@ -1494,14 +1543,14 @@ void* jpeg_send_thread_func(void* arg) {
     int send_size = 0;
     
     while (running) {
-        // Wait for new JPEG data
+        // Poll the latest-frame flag instead of relying on a timed condition
+        // wait. On the target musl build the sender could remain asleep after
+        // a client reconnect even while the capture thread kept signaling.
         pthread_mutex_lock(&jpeg_mutex);
-        while (!g_jpeg_ready && running) {
-            struct timespec ts;
-            clock_gettime(CLOCK_REALTIME, &ts);
-            ts.tv_nsec += 100000000;  // 100ms timeout
-            if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; }
-            pthread_cond_timedwait(&jpeg_cond, &jpeg_mutex, &ts);
+        if (!g_jpeg_ready) {
+            pthread_mutex_unlock(&jpeg_mutex);
+            usleep(2000);
+            continue;
         }
         if (!running) { pthread_mutex_unlock(&jpeg_mutex); break; }
         
@@ -1525,10 +1574,11 @@ void* jpeg_send_thread_func(void* arg) {
         
         if (send_size == 0) continue;
         
-        // Now broadcast to all clients WITHOUT holding jpeg_mutex
-        if (pthread_mutex_trylock(&client_mutex) != 0) {
-            continue;  // Skip if client list is being modified
-        }
+        // Broadcast from this dedicated sender thread. The HTTP accept thread
+        // holds client_mutex only while inserting/removing one descriptor, so a
+        // normal lock is short and guarantees reconnect activity cannot cause
+        // every encoded frame to be discarded by repeated trylock failures.
+        pthread_mutex_lock(&client_mutex);
         
         if (stream_client_count == 0) {
             pthread_mutex_unlock(&client_mutex);
@@ -1888,6 +1938,9 @@ void signal_handler(int sig) {
 
 // ========== MAIN ==========
 int main(int argc, char *argv[]) {
+    // Service output is redirected to a file. Keep every diagnostic line
+    // visible immediately so health checks never inspect stale log buffers.
+    setvbuf(stdout, NULL, _IOLBF, 0);
     // Parse command-line arguments
     const char* model_path = parse_args(argc, argv);
     if (!g_args_valid || (!model_path && !g_no_yolo)) return -1;
@@ -2078,6 +2131,7 @@ int main(int argc, char *argv[]) {
     frame_in.stVFrame.u32Stride[1] = 0;
     frame_in.stVFrame.u32Stride[2] = 0;
 
+    double last_capture_success = get_monotonic_time();
     while (running && !stop_requested) {
         struct v4l2_buffer buf;
         memset(&buf, 0, sizeof(buf));
@@ -2091,9 +2145,15 @@ int main(int argc, char *argv[]) {
                        g_camera_dev, strerror(errno));
                 break;
             }
+            if (get_monotonic_time() - last_capture_success >= 3.0) {
+                printf("[FATAL] Camera device %s produced no frames for 3 seconds "
+                       "(VIDIOC_DQBUF: %s)\n", g_camera_dev, strerror(errno));
+                break;
+            }
             usleep(1000);
             continue;
         }
+        last_capture_success = get_monotonic_time();
         capture_total.fetch_add(1, std::memory_order_relaxed);
 
         int vb_idx;
@@ -2125,7 +2185,16 @@ int main(int argc, char *argv[]) {
             CVI_SYS_IonFlushCache(vb_cache[vb_idx].phy_addr, vb_cache[vb_idx].vir_addr, copy_len);
         }
         
-        ioctl(cam_fd, VIDIOC_QBUF, &buf);
+        // A dequeued capture buffer reports the size produced by the driver.
+        // Clear it before returning the MMAP buffer; this UVC driver otherwise
+        // accepts the first frame but can stop scheduling subsequent transfers.
+        buf.bytesused = 0;
+        if (ioctl(cam_fd, VIDIOC_QBUF, &buf) < 0) {
+            printf("[FATAL] Camera buffer requeue failed (index=%u): %s\n",
+                   buf.index, strerror(errno));
+            if (!g_use_userptr) release_vb_buffer(vb_idx);
+            break;
+        }
         frame_in.stVFrame.u64PhyAddr[0] = vb_cache[vb_idx].phy_addr;
         frame_in.stVFrame.pu8VirAddr[0] = vb_cache[vb_idx].vir_addr;
         frame_in.stVFrame.u32Length[0] = copy_len;

@@ -36,6 +36,18 @@ class DeployModeValidationTests(unittest.TestCase):
         config = app.validate_deploy_request(self.base_request())
         self.assertEqual(config['password'], 'root')
 
+    def test_accepts_manual_camera_exposure(self):
+        request = self.base_request()
+        request['cameraExposure'] = 100
+        config = app.validate_deploy_request(request)
+        self.assertEqual(config['cameraExposure'], 100)
+
+    def test_rejects_invalid_camera_exposure(self):
+        request = self.base_request()
+        request['cameraExposure'] = 'fast'
+        with self.assertRaisesRegex(ValueError, 'cameraExposure'):
+            app.validate_deploy_request(request)
+
     def test_rejects_unknown_runtime_mode(self):
         request = self.base_request()
         request['inferenceMode'] = 'burst'

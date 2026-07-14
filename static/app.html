@@ -490,6 +490,16 @@
                                         </div>
                                     </div>
                                     <div class="config-row advanced-only">
+                                        <label>Exposure</label>
+                                        <div class="config-inputs" style="gap:6px;">
+                                            <select id="exposureMode" class="form-input form-input-sm" style="width:88px" title="Auto exposure may reduce the actual camera FPS in low light">
+                                                <option value="auto">Auto</option>
+                                                <option value="manual">Manual</option>
+                                            </select>
+                                            <input type="number" id="exposureValue" class="form-input form-input-sm" value="100" min="0" max="100000" style="width:72px; text-align:center" title="Lower exposure can increase FPS but makes the image darker" disabled>
+                                        </div>
+                                    </div>
+                                    <div class="config-row advanced-only">
                                         <label>Options</label>
                                         <div class="config-inputs" style="gap:24px;">
                                             <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px" title="Stream only, no AI processing">

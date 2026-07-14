@@ -961,6 +961,14 @@ document.addEventListener('DOMContentLoaded', () => {
     outputTransportSelect?.addEventListener('change', syncRuntimeOptions);
     syncRuntimeOptions();
 
+    const exposureMode = document.getElementById('exposureMode');
+    const exposureValue = document.getElementById('exposureValue');
+    function syncExposureControl() {
+        if (exposureValue) exposureValue.disabled = exposureMode?.value !== 'manual';
+    }
+    exposureMode?.addEventListener('change', syncExposureControl);
+    syncExposureControl();
+
     // Deploy file upload
     if (deployFileDrop && deployFileInput) {
         deployFileDrop.addEventListener('click', () => deployFileInput.click());
@@ -1106,6 +1114,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const nmsThresh = document.getElementById('nmsThresh')?.value || 0.5;
             const noYolo = document.getElementById('noYolo')?.checked || false;
             const jpegQuality = document.getElementById('jpegQuality')?.value || 70;
+            const cameraExposure = document.getElementById('exposureMode')?.value === 'manual'
+                ? (document.getElementById('exposureValue')?.value || 100)
+                : 'auto';
             const uartDev = document.getElementById('uartDev')?.value || '/dev/ttyS0';
             const baudRate = document.getElementById('baudRate')?.value || 115200;
             const inferenceMode = selectedInferenceMode();
@@ -1143,7 +1154,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     body: JSON.stringify({ 
                         ip, model_filename: modelFilename, streamWidth, streamHeight, yoloW, yoloH, 
                         password, user,
-                        camWidth, camHeight, confThresh, nmsThresh, noYolo, jpegQuality, uartDev, baudRate,
+                        camWidth, camHeight, confThresh, nmsThresh, noYolo, jpegQuality, cameraExposure, uartDev, baudRate,
                         inferenceMode, streamOutput, triggerSource, triggerPort, triggerGpio, triggerEdge,
                         outputTransport, metadataPort
                     })
@@ -1205,6 +1216,27 @@ document.addEventListener('DOMContentLoaded', () => {
     const triggerResultDetections = document.getElementById('triggerResultDetections');
     let inferenceActive = false;
     let inferenceMetaTimer = null;
+    let inferenceStreamRetryTimer = null;
+
+    function connectInferenceStream() {
+        if (!inferenceActive || !mjpegStream || !inferenceDeviceIp) return;
+        const ip = inferenceDeviceIp.value.trim();
+        if (!ip) return;
+        mjpegStream.src = `http://${ip}:8080/?t=${Date.now()}`;
+    }
+
+    mjpegStream?.addEventListener('load', () => {
+        if (inferenceStreamRetryTimer) clearTimeout(inferenceStreamRetryTimer);
+        inferenceStreamRetryTimer = null;
+    });
+
+    mjpegStream?.addEventListener('error', () => {
+        if (!inferenceActive || inferenceStreamRetryTimer) return;
+        inferenceStreamRetryTimer = setTimeout(() => {
+            inferenceStreamRetryTimer = null;
+            connectInferenceStream();
+        }, 1500);
+    });
 
     function currentLanguage() {
         return localStorage.getItem('lailab_lang') || 'en';
@@ -1326,7 +1358,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 btnConnectInference.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><rect x="6" y="6" width="12" height="12"/></svg><span>Disconnect</span>`;
                 btnConnectInference.classList.replace('btn-primary', 'btn-secondary');
                 
-                mjpegStream.src = `/api/stream_proxy?ip=${ip}&t=` + Date.now();
+                // MJPEG <img> streams do not require CORS. Connect directly to
+                // the board so each visible Test Inference view owns exactly
+                // one upstream socket and cannot leave proxy reconnect loops.
+                connectInferenceStream();
                 mjpegStream.style.display = 'block';
                 noStreamOverlay.style.display = 'none';
                 if (btnTriggerInference) btnTriggerInference.disabled = false;
@@ -1340,6 +1375,8 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 // Disconnect
                 inferenceActive = false;
+                if (inferenceStreamRetryTimer) clearTimeout(inferenceStreamRetryTimer);
+                inferenceStreamRetryTimer = null;
                 btnConnectInference.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>Connect Data</span>`;
                 btnConnectInference.classList.replace('btn-secondary', 'btn-primary');
                 
